@@ -1,0 +1,17 @@
+ [email]
+  imap_server = "outlook.office365.com"  # For Office 365
+  user = "rec_team@volibits.com"
+  password = "YOUR-EMAIL-APP-PASSWORD"   # Get from Office 365
+
+  [database]
+  host = "aws-0-ap-south-1.pooler.supabase.com"  # Your Supabase host
+  port = 6543
+  database = "postgres"
+  user = "postgres.uwwzgoqxtzvbcxcxmcvn"
+  password = "Rezet@123"
+
+
+  [settings]
+  check_interval = 300  # Check every 5 minutes
+  mark_as_read = true
+  imap_folder = "INBOX"
