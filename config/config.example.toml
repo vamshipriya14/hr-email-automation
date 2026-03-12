@@ -1,0 +1,42 @@
+# Email Automation Configuration
+# Copy this file to config.toml and fill in your credentials
+
+[email]
+imap_server = "outlook.office365.com"  # For Office 365/Outlook
+# imap_server = "imap.gmail.com"       # For Gmail
+user = "rec_team@volibits.com"
+password = "your-app-password-here"    # Use App Password, not regular password
+
+[database]
+host = "your-db-host.pooler.supabase.com"
+port = 5432
+database = "postgres"
+user = "postgres"
+password = "your-database-password"
+
+[settings]
+# Check interval in seconds (300 = 5 minutes)
+check_interval = 300
+
+# Mark processed emails as read
+mark_as_read = true
+
+# Optional: Move processed emails to folder
+# move_to_folder = "Processed"
+
+# IMAP folder to monitor
+imap_folder = "INBOX"
+
+# Save processed emails to local folder (for backup/debugging)
+save_emails = true
+save_folder = "processed"
+
+# NOTE: Company codes are extracted dynamically from email subjects
+# No predefined mapping needed - any pattern "CODE: Skill" will work
+# Examples: BS: Developer, XY: Tester, ABC: Manager
+# The extracted code is used directly as company_name in the database
+
+[logging]
+# Log level: DEBUG, INFO, WARNING, ERROR
+level = "INFO"
+log_file = "email_monitor.log"

@@ -1,0 +1,17 @@
+# Email Automation System - Dependencies
+
+# Core
+python-dotenv>=1.0.0
+toml>=0.10.2
+
+# Database
+psycopg2-binary>=2.9.0
+
+# Email
+email-validator>=2.0.0
+
+# Configuration (for compatibility with existing config)
+streamlit>=1.28.0
+
+# Utilities
+python-dateutil>=2.8.2
