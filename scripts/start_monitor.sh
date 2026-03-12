@@ -3,6 +3,14 @@
 
 cd "$(dirname "$0")/.."
 
+# Load environment variables if .env exists
+if [ -f ".env" ]; then
+    set -a
+    source .env
+    set +a
+    echo "✅ Loaded environment variables from .env"
+fi
+
 echo "🚀 Starting Email Monitor"
 echo "=================================================="
 echo ""

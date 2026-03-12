@@ -19,18 +19,34 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
     from .database import PostgresClient
     from .email_parser import EmailProcessor, EmailParser
+    from .oauth_email_client import OAuth2EmailClient
 except ImportError:
     from database import PostgresClient
     from email_parser import EmailProcessor, EmailParser
+    from oauth_email_client import OAuth2EmailClient
 
 
 class EmailMonitor:
     """Monitor mailbox and auto-process candidate emails"""
 
-    def __init__(self, imap_server: str, email_user: str, email_pass: str, db_client: PostgresClient):
+    def __init__(self, imap_server: str, email_user: str, db_client: PostgresClient,
+                 email_pass: str = None, oauth_client: OAuth2EmailClient = None):
+        """
+        Initialize email monitor
+
+        Args:
+            imap_server: IMAP server address
+            email_user: Email address
+            db_client: Database client
+            email_pass: Email password (for basic auth) - optional
+            oauth_client: OAuth2 client (for OAuth auth) - optional
+
+        Note: Provide either email_pass OR oauth_client
+        """
         self.imap_server = imap_server
         self.email_user = email_user
         self.email_pass = email_pass
+        self.oauth_client = oauth_client
         self.db_client = db_client
         self.processor = EmailProcessor(db_client)
 
@@ -39,12 +55,27 @@ class EmailMonitor:
         self.save_folder.mkdir(parents=True, exist_ok=True)
 
     def connect(self):
-        """Connect to IMAP server"""
+        """Connect to IMAP server using basic auth or OAuth2"""
         try:
-            self.mail = imaplib.IMAP4_SSL(self.imap_server)
-            self.mail.login(self.email_user, self.email_pass)
-            print(f"✅ Connected to {self.email_user}")
-            return True
+            # Try OAuth2 first if available
+            if self.oauth_client:
+                print(f"🔐 Connecting with OAuth2...")
+                self.mail = self.oauth_client.connect_imap(self.imap_server)
+                print(f"✅ Connected to {self.email_user} (OAuth2)")
+                return True
+
+            # Fall back to basic auth
+            elif self.email_pass:
+                print(f"🔑 Connecting with basic authentication...")
+                self.mail = imaplib.IMAP4_SSL(self.imap_server)
+                self.mail.login(self.email_user, self.email_pass)
+                print(f"✅ Connected to {self.email_user} (Basic Auth)")
+                return True
+
+            else:
+                print("❌ No authentication method provided (need password or OAuth2)")
+                return False
+
         except Exception as e:
             print(f"❌ Connection failed: {e}")
             return False
@@ -263,59 +294,109 @@ def main():
 
     args = parser.parse_args()
 
-    # Load configuration from config.toml
+    # Load configuration - Priority: Environment Variables > config.toml
+
+    # Try to load config.toml (optional if env vars are set)
+    config = {}
     config_path = os.path.join(os.path.dirname(__file__), '..', 'config', 'config.toml')
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, 'r') as f:
+                config = toml.load(f)
+        except Exception as e:
+            print(f"⚠️  Warning: Error loading config.toml: {e}")
+            print("   Will use environment variables instead")
 
-    if not os.path.exists(config_path):
-        print("❌ Error: config.toml not found")
-        print(f"   Expected at: {config_path}")
-        print("   Please copy config.example.toml to config.toml and fill in credentials")
-        sys.exit(1)
-
-    try:
-        with open(config_path, 'r') as f:
-            config = toml.load(f)
-    except Exception as e:
-        print(f"❌ Error loading config.toml: {e}")
-        sys.exit(1)
-
-    # Get email credentials from config
+    # Get email credentials - Support both basic auth and OAuth2
     try:
         email_config = config.get('email', {})
-        imap_server = email_config.get('imap_server', 'outlook.office365.com')
-        email_user = email_config.get('user')
-        email_pass = email_config.get('password')
 
-        if not email_pass or not email_user:
-            print("❌ Error: Email credentials not found in config.toml")
-            print("   Please add to config/config.toml:")
-            print("   [email]")
-            print("   imap_server = 'outlook.office365.com'")
-            print("   user = 'your-email@company.com'")
-            print("   password = 'your-password'")
+        imap_server = os.getenv('EMAIL_IMAP_SERVER') or email_config.get('imap_server', 'outlook.office365.com')
+        email_user = os.getenv('EMAIL_USER') or email_config.get('user')
+        email_pass = os.getenv('EMAIL_PASSWORD') or email_config.get('password')
+
+        # Check for OAuth2 credentials
+        azure_tenant_id = os.getenv('AZURE_TENANT_ID') or email_config.get('azure_tenant_id')
+        azure_client_id = os.getenv('AZURE_CLIENT_ID') or email_config.get('azure_client_id')
+        azure_client_secret = os.getenv('AZURE_CLIENT_SECRET') or email_config.get('azure_client_secret')
+
+        oauth_client = None
+
+        # Try OAuth2 first
+        if all([azure_tenant_id, azure_client_id, azure_client_secret, email_user]):
+            print("🔐 Using OAuth2 authentication (Azure AD)")
+            oauth_client = OAuth2EmailClient(
+                tenant_id=azure_tenant_id,
+                client_id=azure_client_id,
+                client_secret=azure_client_secret,
+                email_user=email_user
+            )
+
+        # Fall back to basic auth
+        elif email_pass and email_user:
+            print("🔑 Using basic authentication (app password)")
+            # email_pass will be used
+
+        else:
+            print("❌ Error: Email credentials not found")
+            print("\n   Option 1 - OAuth2 (Recommended for Office 365):")
+            print("   export EMAIL_USER='rec_team@volibits.com'")
+            print("   export AZURE_TENANT_ID='your-tenant-id'")
+            print("   export AZURE_CLIENT_ID='your-client-id'")
+            print("   export AZURE_CLIENT_SECRET='your-client-secret'")
+            print("\n   Option 2 - App Password:")
+            print("   export EMAIL_USER='rec_team@volibits.com'")
+            print("   export EMAIL_PASSWORD='your-app-password'")
+            print("   export EMAIL_IMAP_SERVER='outlook.office365.com'")
+            print("\n   Or add to config/config.toml")
             sys.exit(1)
 
     except Exception as e:
         print(f"❌ Error loading email config: {e}")
         sys.exit(1)
 
-    # Initialize database client
+    # Initialize database client - Environment variables take priority
     try:
         db_config = config.get('database', {})
+
+        db_host = os.getenv('DB_HOST') or db_config.get('host')
+        db_port = int(os.getenv('DB_PORT', '5432')) if os.getenv('DB_PORT') else db_config.get('port', 5432)
+        db_name = os.getenv('DB_NAME') or db_config.get('database')
+        db_user = os.getenv('DB_USER') or db_config.get('user')
+        db_pass = os.getenv('DB_PASSWORD') or db_config.get('password')
+
+        if not all([db_host, db_name, db_user, db_pass]):
+            print("❌ Error: Database credentials not found")
+            print("\n   Option 1 - Environment Variables:")
+            print("   export DB_HOST='your-db-host.supabase.com'")
+            print("   export DB_PORT='5432'")
+            print("   export DB_NAME='postgres'")
+            print("   export DB_USER='postgres.xxxxx'")
+            print("   export DB_PASSWORD='your-db-password'")
+            print("\n   Option 2 - Config File:")
+            print("   Add to config/config.toml")
+            sys.exit(1)
+
         db_client = PostgresClient(
-            host=db_config.get('host'),
-            port=db_config.get('port', 5432),
-            database=db_config.get('database'),
-            user=db_config.get('user'),
-            password=db_config.get('password')
+            host=db_host,
+            port=db_port,
+            database=db_name,
+            user=db_user,
+            password=db_pass
         )
         print("✅ Database connected\n")
     except Exception as e:
         print(f"❌ Database connection failed: {e}")
         sys.exit(1)
 
-    # Create monitor
-    monitor = EmailMonitor(imap_server, email_user, email_pass, db_client)
+    # Create monitor with appropriate auth method
+    monitor = EmailMonitor(
+        imap_server=imap_server,
+        email_user=email_user,
+        db_client=db_client,
+        email_pass=email_pass,
+        oauth_client=oauth_client
+    )
 
     # Run
     if args.once:
