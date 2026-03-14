@@ -1,417 +1,487 @@
+#!/usr/bin/env python3
 """
-Email Monitor for HR Database Auto-Updates
-Monitors rec_team@volibits.com mailbox and auto-processes candidate emails
+Automated Email Monitor for HR Database
+Monitors rec_team@volibits.com group for new candidate emails
+Automatically parses and inserts candidates into database
 """
 import os
 import sys
-import imaplib
-import email
-from email.header import decode_header
 import time
-from datetime import datetime
+import email
 from pathlib import Path
-import re
-import toml
+from datetime import datetime
+from typing import Dict, List
 
-# Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add current directory to path
+sys.path.insert(0, str(Path(__file__).parent))
 
-try:
-    from .database import PostgresClient
-    from .email_parser import EmailProcessor, EmailParser
-    from .oauth_email_client import OAuth2EmailClient
-except ImportError:
-    from database import PostgresClient
-    from email_parser import EmailProcessor, EmailParser
-    from oauth_email_client import OAuth2EmailClient
+from graph_group_client import GraphGroupClient
+from email_parser import EmailParser
+from database import PostgresClient
+from email_tracker import EmailTracker
 
 
 class EmailMonitor:
-    """Monitor mailbox and auto-process candidate emails"""
+    """Automated email monitoring and processing"""
 
-    def __init__(self, imap_server: str, email_user: str, db_client: PostgresClient,
-                 email_pass: str = None, oauth_client: OAuth2EmailClient = None):
-        """
-        Initialize email monitor
-
-        Args:
-            imap_server: IMAP server address
-            email_user: Email address
-            db_client: Database client
-            email_pass: Email password (for basic auth) - optional
-            oauth_client: OAuth2 client (for OAuth auth) - optional
-
-        Note: Provide either email_pass OR oauth_client
-        """
-        self.imap_server = imap_server
-        self.email_user = email_user
-        self.email_pass = email_pass
-        self.oauth_client = oauth_client
+    def __init__(self, tenant_id: str, client_id: str, client_secret: str,
+                 group_id: str, db_client: PostgresClient):
+        self.graph_client = GraphGroupClient(
+            tenant_id=tenant_id,
+            client_id=client_id,
+            client_secret=client_secret,
+            group_id=group_id
+        )
         self.db_client = db_client
-        self.processor = EmailProcessor(db_client)
+        self.tracker = EmailTracker()
 
-        # Folder to save processed emails (optional)
-        self.save_folder = Path.home() / "Downloads" / "emails" / "processed"
-        self.save_folder.mkdir(parents=True, exist_ok=True)
-
-    def connect(self):
-        """Connect to IMAP server using basic auth or OAuth2"""
-        try:
-            # Try OAuth2 first if available
-            if self.oauth_client:
-                print(f"🔐 Connecting with OAuth2...")
-                self.mail = self.oauth_client.connect_imap(self.imap_server)
-                print(f"✅ Connected to {self.email_user} (OAuth2)")
-                return True
-
-            # Fall back to basic auth
-            elif self.email_pass:
-                print(f"🔑 Connecting with basic authentication...")
-                self.mail = imaplib.IMAP4_SSL(self.imap_server)
-                self.mail.login(self.email_user, self.email_pass)
-                print(f"✅ Connected to {self.email_user} (Basic Auth)")
-                return True
-
-            else:
-                print("❌ No authentication method provided (need password or OAuth2)")
-                return False
-
-        except Exception as e:
-            print(f"❌ Connection failed: {e}")
-            return False
-
-    def disconnect(self):
-        """Disconnect from IMAP server"""
-        try:
-            self.mail.logout()
-        except:
-            pass
-
-    def is_candidate_email(self, subject: str) -> bool:
+    def process_new_emails(self, max_emails: int = 50, dry_run: bool = False) -> Dict:
         """
-        Check if subject matches candidate email pattern
-
-        Pattern: CODE: Skill Name
-        - CODE can be any 2-4 letter abbreviation (BS, CE, XY, ABC, etc.)
-        - Must have colon and space after code
-        - No predefined codes needed - extracted dynamically
-        """
-        if not subject:
-            return False
-
-        # Remove Fw:/Fwd:/RE: prefixes
-        clean_subject = re.sub(r'^(Fw|Fwd|RE):\s*', '', subject, flags=re.IGNORECASE).strip()
-
-        # Check if starts with any code pattern (2-4 letters, colon, space, skill)
-        # Examples: BS: Java, CE: Power BI, XY: Developer, ABC: Testing
-        pattern = r'^[A-Z]{2,4}:\s*.+'
-
-        return bool(re.match(pattern, clean_subject, re.IGNORECASE))
-
-    def decode_subject(self, subject):
-        """Decode email subject"""
-        decoded_parts = decode_header(subject)
-        decoded_subject = ""
-
-        for part, encoding in decoded_parts:
-            if isinstance(part, bytes):
-                try:
-                    decoded_subject += part.decode(encoding or 'utf-8')
-                except:
-                    decoded_subject += part.decode('utf-8', errors='ignore')
-            else:
-                decoded_subject += part
-
-        return decoded_subject
-
-    def process_new_emails(self, folder="INBOX", mark_as_read=True, move_to_folder=None):
-        """
-        Check for and process new candidate emails
+        Process new emails from the group
 
         Args:
-            folder: IMAP folder to check (default: INBOX)
-            mark_as_read: Mark processed emails as read
-            move_to_folder: Move processed emails to this folder (e.g., "Processed")
+            max_emails: Maximum number of emails to check
+            dry_run: If True, don't actually insert to database
+
+        Returns:
+            Dict with processing statistics
         """
+        stats = {
+            'checked': 0,
+            'new': 0,
+            'processed': 0,
+            'candidates_inserted': 0,
+            'errors': 0,
+            'skipped_no_candidates': 0
+        }
+
+        print("\n" + "=" * 80)
+        print(f"📧 EMAIL MONITORING - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print("=" * 80)
+        print()
+
+        # Get recent threads
         try:
-            # Select inbox
-            self.mail.select(folder)
+            print(f"📬 Fetching up to {max_emails} recent threads...")
+            threads = self.graph_client.list_threads(max_results=max_emails)
+            print(f"   ✅ Found {len(threads)} threads")
+            print()
+        except Exception as e:
+            print(f"   ❌ Failed to fetch threads: {e}")
+            stats['errors'] += 1
+            return stats
 
-            # Search for unread emails
-            status, messages = self.mail.search(None, 'UNSEEN')
+        # Process each thread
+        for i, thread in enumerate(threads, 1):
+            thread_id = thread.get('id')
+            topic = thread.get('topic', 'No subject')
+            last_delivered = thread.get('lastDeliveredDateTime', 'Unknown')
 
-            if status != 'OK':
-                print("No messages found")
-                return
+            stats['checked'] += 1
 
-            email_ids = messages[0].split()
+            print(f"[{i}/{len(threads)}] {topic}")
+            print(f"         Thread ID: {thread_id[:40]}...")
+            print(f"         Last delivered: {last_delivered}")
 
-            if not email_ids:
-                print("No new emails")
-                return
-
-            print(f"\n{'='*80}")
-            print(f"📬 Found {len(email_ids)} new email(s)")
-            print(f"{'='*80}\n")
-
-            processed_count = 0
-            skipped_count = 0
-
-            for email_id in email_ids:
-                try:
-                    # Fetch email
-                    status, msg_data = self.mail.fetch(email_id, '(RFC822)')
-
-                    if status != 'OK':
-                        continue
-
-                    # Parse email
-                    raw_email = msg_data[0][1]
-                    msg = email.message_from_bytes(raw_email)
-
-                    # Get subject
-                    subject = msg.get('Subject', '')
-                    subject = self.decode_subject(subject)
-
-                    # Get sender
-                    from_email = msg.get('From', '')
-
-                    print(f"📧 Email: {subject[:80]}...")
-                    print(f"   From: {from_email}")
-
-                    # Check if it's a candidate email
-                    if not self.is_candidate_email(subject):
-                        print(f"   ⏭️  Skipped (not a candidate email)\n")
-                        skipped_count += 1
-                        continue
-
-                    # Save email to temp file
-                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                    safe_subject = re.sub(r'[^\w\s-]', '', subject).strip().replace(' ', '_')[:50]
-                    temp_file = self.save_folder / f"{timestamp}_{safe_subject}.eml"
-
-                    with open(temp_file, 'wb') as f:
-                        f.write(raw_email)
-
-                    # Process email
-                    print(f"   🔄 Processing...")
-
-                    parser = EmailParser(str(temp_file))
-                    data = parser.parse()
-
-                    candidates_inserted = 0
-                    candidates_duplicate = 0
-
-                    for candidate in data.get('candidates', []):
-                        # Check duplicate type
-                        duplicate_type = self.processor._check_duplicate_type(candidate)
-
-                        # Insert (always inserts, marks duplicates)
-                        success = self.processor._insert_candidate(candidate)
-
-                        if success:
-                            if duplicate_type:
-                                candidates_duplicate += 1
-                            else:
-                                candidates_inserted += 1
-
-                    total_candidates = len(data.get('candidates', []))
-                    print(f"   ✅ Processed: {total_candidates} candidate(s)")
-                    print(f"      - New: {candidates_inserted}")
-                    print(f"      - Duplicates: {candidates_duplicate}")
-
-                    # Mark as read
-                    if mark_as_read:
-                        self.mail.store(email_id, '+FLAGS', '\\Seen')
-
-                    # Move to folder (optional)
-                    if move_to_folder:
-                        try:
-                            self.mail.copy(email_id, move_to_folder)
-                            self.mail.store(email_id, '+FLAGS', '\\Deleted')
-                            self.mail.expunge()
-                        except:
-                            pass
-
-                    processed_count += 1
+            # Get posts to find the internetMessageId
+            try:
+                posts = self.graph_client.get_thread_posts(thread_id)
+                if not posts:
+                    print(f"         ⚠️  No posts found, skipping")
                     print()
-
-                except Exception as e:
-                    print(f"   ❌ Error processing email: {e}\n")
                     continue
 
-            print(f"\n{'='*80}")
-            print(f"📊 SUMMARY")
-            print(f"{'='*80}")
-            print(f"Total new emails: {len(email_ids)}")
-            print(f"Processed: {processed_count}")
-            print(f"Skipped: {skipped_count}")
-            print(f"{'='*80}\n")
+                # Find the post with candidate data (search all posts)
+                best_post = self._find_best_post(posts)
+                if not best_post:
+                    print(f"         ⚠️  No post with table found, skipping")
+                    print()
+                    continue
+
+                # Use thread_id as the unique identifier for tracking
+                # Each thread represents a unique email conversation
+                if self.tracker.is_processed(thread_id):
+                    print(f"         ✓ Already processed")
+                    print()
+                    continue
+
+                stats['new'] += 1
+                print(f"         🆕 NEW EMAIL - Processing...")
+
+                # Process the email
+                result = self._process_email(best_post, thread_id, topic, dry_run)
+
+                if result['success']:
+                    stats['processed'] += 1
+                    stats['candidates_inserted'] += result['candidates_inserted']
+
+                    if result['candidates_inserted'] > 0:
+                        print(f"         ✅ Processed {result['candidates_inserted']} candidate(s)")
+                    else:
+                        print(f"         ✓ Processed (no candidates found)")
+                        stats['skipped_no_candidates'] += 1
+
+                    # Mark as processed using thread_id
+                    self.tracker.mark_processed(
+                        message_id=thread_id,
+                        thread_id=thread_id,
+                        subject=topic,
+                        num_candidates=result['candidates_inserted'],
+                        status='success'
+                    )
+                else:
+                    stats['errors'] += 1
+                    print(f"         ❌ Error: {result['error']}")
+
+                    # Mark as processed with error
+                    self.tracker.mark_processed(
+                        message_id=thread_id,
+                        thread_id=thread_id,
+                        subject=topic,
+                        num_candidates=0,
+                        status='error',
+                        error=result['error']
+                    )
+
+                print()
+
+            except Exception as e:
+                print(f"         ❌ Unexpected error: {e}")
+                stats['errors'] += 1
+                print()
+                continue
+
+        # Print summary
+        print("=" * 80)
+        print("📊 PROCESSING SUMMARY")
+        print("=" * 80)
+        print(f"Threads checked: {stats['checked']}")
+        print(f"New emails found: {stats['new']}")
+        print(f"Successfully processed: {stats['processed']}")
+        print(f"Candidates inserted: {stats['candidates_inserted']}")
+        print(f"Skipped (no candidates): {stats['skipped_no_candidates']}")
+        print(f"Errors: {stats['errors']}")
+        print()
+
+        # Show tracker stats
+        tracker_stats = self.tracker.get_stats()
+        print("📈 TOTAL STATS (All Time)")
+        print("=" * 80)
+        print(f"Total emails processed: {tracker_stats['total_processed']}")
+        print(f"Total candidates inserted: {tracker_stats['total_candidates']}")
+        print(f"Success rate: {tracker_stats['successful']}/{tracker_stats['total_processed']}")
+        print("=" * 80)
+        print()
+
+        return stats
+
+    def _find_best_post(self, posts: List[Dict]) -> Dict:
+        """
+        Find the post with candidate data by actually parsing each post
+        Returns the post with the most candidates
+        """
+        best_post = None
+        max_candidates = 0
+
+        for i, post in enumerate(posts):
+            body_content = post.get('body', {}).get('content', '')
+
+            # Quick check: does this post have a table?
+            if '<table' not in body_content.lower():
+                continue
+
+            # Try parsing this post to count candidates
+            try:
+                from_info = post.get('from', {})
+                sender = from_info.get('emailAddress', {}).get('address', 'Unknown')
+
+                # Create temporary email message
+                msg = email.message.EmailMessage()
+                msg['Subject'] = 'Test'
+                msg['From'] = sender
+                msg['To'] = 'rec_team@volibits.com'
+                body_type = post.get('body', {}).get('contentType', 'text')
+                msg.set_content(body_content, subtype='html' if body_type == 'html' else 'plain')
+
+                # Save to temporary file
+                temp_file = Path('/tmp/find_best_post_temp.eml')
+                with open(temp_file, 'wb') as f:
+                    f.write(msg.as_bytes())
+
+                # Parse to count candidates
+                parser = EmailParser(str(temp_file))
+                parsed_data = parser.parse()
+                num_candidates = len(parsed_data.get('candidates', []))
+
+                if num_candidates > max_candidates:
+                    max_candidates = num_candidates
+                    best_post = post
+
+                # Cleanup
+                if temp_file.exists():
+                    temp_file.unlink()
+
+            except Exception as e:
+                # If parsing fails, skip this post
+                continue
+
+        return best_post
+
+    def _process_email(self, post: Dict, thread_id: str, topic: str,
+                      dry_run: bool = False) -> Dict:
+        """
+        Process a single email post
+
+        Returns:
+            Dict with processing result
+        """
+        result = {
+            'success': False,
+            'candidates_inserted': 0,
+            'error': None
+        }
+
+        try:
+            # Extract email details
+            from_info = post.get('from', {})
+            sender = from_info.get('emailAddress', {}).get('address', 'Unknown')
+
+            body_info = post.get('body', {})
+            body_content = body_info.get('content', '')
+            body_type = body_info.get('contentType', 'text')
+
+            # Create temporary email message for parser
+            msg = email.message.EmailMessage()
+            msg['Subject'] = topic
+            msg['From'] = sender
+            msg['To'] = 'rec_team@volibits.com'
+            msg.set_content(body_content, subtype='html' if body_type == 'html' else 'plain')
+
+            # Save to temporary file
+            temp_file = Path('/tmp/email_monitor_temp.eml')
+            with open(temp_file, 'wb') as f:
+                f.write(msg.as_bytes())
+
+            # Parse email
+            parser = EmailParser(str(temp_file))
+            parsed_data = parser.parse()
+            candidates = parsed_data.get('candidates', [])
+
+            # Process candidates
+            if candidates:
+                if dry_run:
+                    # Dry run: just count what would be inserted
+                    result['candidates_inserted'] = len(candidates)
+                else:
+                    # Live mode: actually insert to database
+                    print(f"         💾 Inserting {len(candidates)} candidate(s) to database...")
+                    for i, candidate in enumerate(candidates, 1):
+                        try:
+                            print(f"            [{i}/{len(candidates)}] Inserting {candidate.get('name_of_candidate', 'Unknown')}...")
+                            success = self._insert_candidate(candidate)
+                            if success:
+                                result['candidates_inserted'] += 1
+                                print(f"            [{i}/{len(candidates)}] ✅ Inserted successfully")
+                            else:
+                                print(f"            [{i}/{len(candidates)}] ❌ Insert returned False (0 rows affected)")
+                        except Exception as e:
+                            print(f"            [{i}/{len(candidates)}] ⚠️  Exception: {e}")
+                            import traceback
+                            traceback.print_exc()
+
+            # Cleanup temp file
+            if temp_file.exists():
+                temp_file.unlink()
+
+            result['success'] = True
 
         except Exception as e:
-            print(f"❌ Error: {e}")
+            result['error'] = str(e)
 
-    def run_continuous(self, check_interval_seconds=300):
+        return result
+
+    def _insert_candidate(self, candidate: Dict) -> bool:
+        """Insert candidate into database"""
+        # Check for duplicates
+        duplicate_type = self._check_duplicate_type(candidate)
+        if duplicate_type:
+            candidate['is_duplicate'] = duplicate_type
+
+        # Prepare insert query
+        fields = []
+        values = []
+        placeholders = []
+
+        allowed_fields = {
+            'name_of_candidate', 'email_id', 'contact_number', 'jr_no', 'date',
+            'general_skill', 'company_name', 'client_recruiter', 'recruiter',
+            'total_experience', 'relevant_experience', 'current_ctc', 'expected_ctc',
+            'notice_period', 'current_location', 'preferred_location', 'current_org',
+            'status', 'final_status', 'remarks', 'delivery_type',
+            'email_from', 'email_to', 'attachment', 'record_status', 'is_duplicate'
+        }
+
+        # Add candidate fields
+        for field, value in candidate.items():
+            if field in allowed_fields and value:
+                trimmed_value = value.strip() if isinstance(value, str) else value
+                if trimmed_value:
+                    fields.append(field)
+                    values.append(trimmed_value)
+                    placeholders.append('%s')
+
+        # Add audit fields
+        created_by_value = candidate.get('recruiter', 'email_monitor')
+        fields.extend(['created_by', 'created_date'])
+        values.extend([created_by_value, datetime.now()])
+        placeholders.extend(['%s', '%s'])
+
+        modified_by_value = candidate.get('recruiter', 'email_monitor')
+        fields.extend(['modified_by', 'modified_date'])
+        values.extend([modified_by_value, datetime.now()])
+        placeholders.extend(['%s', '%s'])
+
+        query = f"""
+            INSERT INTO hrvolibit ({', '.join(fields)})
+            VALUES ({', '.join(placeholders)})
         """
-        Run continuous monitoring (checks every N seconds)
+
+        try:
+            affected = self.db_client.execute_update(query, tuple(values))
+            return affected > 0
+        except Exception as e:
+            raise e
+
+    def _check_duplicate_type(self, candidate: Dict) -> str:
+        """Check if candidate is duplicate"""
+        email = candidate.get('email_id', '').strip()
+        contact = candidate.get('contact_number', '').strip()
+
+        if email and contact:
+            query = "SELECT id FROM hrvolibit WHERE email_id = %s AND contact_number = %s LIMIT 1"
+            result = self.db_client.execute_query(query, (email, contact))
+            if result and len(result) > 0:
+                return "duplicate"
+
+        if email:
+            query = "SELECT id FROM hrvolibit WHERE email_id = %s LIMIT 1"
+            result = self.db_client.execute_query(query, (email,))
+            if result and len(result) > 0:
+                return "duplicate email"
+
+        if contact:
+            query = "SELECT id FROM hrvolibit WHERE contact_number = %s LIMIT 1"
+            result = self.db_client.execute_query(query, (contact,))
+            if result and len(result) > 0:
+                return "duplicate cell"
+
+        return None
+
+    def run_continuous(self, interval_seconds: int = 300, dry_run: bool = False):
+        """
+        Run monitor continuously
 
         Args:
-            check_interval_seconds: How often to check for new emails (default: 300 = 5 minutes)
+            interval_seconds: Time between checks (default: 300 = 5 minutes)
+            dry_run: If True, don't actually insert to database
         """
-        print(f"🔄 Starting continuous email monitoring...")
-        print(f"   Checking every {check_interval_seconds} seconds")
-        print(f"   Press Ctrl+C to stop\n")
+        print("=" * 80)
+        print("🚀 STARTING CONTINUOUS EMAIL MONITORING")
+        print("=" * 80)
+        print(f"Check interval: {interval_seconds} seconds ({interval_seconds/60} minutes)")
+        print(f"Dry run mode: {dry_run}")
+        print()
+        print("Press Ctrl+C to stop")
+        print("=" * 80)
+        print()
 
         try:
             while True:
-                if self.connect():
-                    self.process_new_emails()
-                    self.disconnect()
+                self.process_new_emails(max_emails=50, dry_run=dry_run)
 
-                print(f"💤 Waiting {check_interval_seconds} seconds until next check...")
-                print(f"   (Next check at: {datetime.now() + timedelta(seconds=check_interval_seconds)})")
-                time.sleep(check_interval_seconds)
+                print(f"⏰ Waiting {interval_seconds} seconds until next check...")
+                print()
+                time.sleep(interval_seconds)
 
         except KeyboardInterrupt:
-            print("\n\n🛑 Monitoring stopped by user")
-        except Exception as e:
-            print(f"\n\n❌ Error in monitoring loop: {e}")
-        finally:
-            self.disconnect()
+            print()
+            print("=" * 80)
+            print("🛑 MONITORING STOPPED")
+            print("=" * 80)
+            print()
 
 
 def main():
-    """Main entry point"""
+    """Main execution"""
     import argparse
-    from datetime import timedelta
 
-    parser = argparse.ArgumentParser(description='Monitor rec_team@volibits.com for candidate emails')
-    parser.add_argument('--once', action='store_true', help='Check once and exit (default: continuous)')
-    parser.add_argument('--interval', type=int, default=300, help='Check interval in seconds (default: 300)')
-    parser.add_argument('--folder', default='INBOX', help='IMAP folder to check (default: INBOX)')
-    parser.add_argument('--mark-read', action='store_true', default=True, help='Mark processed emails as read')
-    parser.add_argument('--move-to', help='Move processed emails to this folder')
+    parser = argparse.ArgumentParser(description='Automated HR Email Monitor')
+    parser.add_argument('--continuous', action='store_true',
+                       help='Run continuously (default: run once)')
+    parser.add_argument('--interval', type=int, default=300,
+                       help='Check interval in seconds (default: 300 = 5 minutes)')
+    parser.add_argument('--dry-run', action='store_true',
+                       help='Dry run - do not insert to database')
+    parser.add_argument('--max-emails', type=int, default=50,
+                       help='Maximum emails to check per run (default: 50)')
 
     args = parser.parse_args()
 
-    # Load configuration - Priority: Environment Variables > config.toml
+    # Get credentials from environment
+    tenant_id = os.getenv('AZURE_TENANT_ID')
+    client_id = os.getenv('AZURE_CLIENT_ID')
+    client_secret = os.getenv('AZURE_CLIENT_SECRET')
+    group_id = os.getenv('GROUP_ID')
 
-    # Try to load config.toml (optional if env vars are set)
-    config = {}
-    config_path = os.path.join(os.path.dirname(__file__), '..', 'config', 'config.toml')
-    if os.path.exists(config_path):
-        try:
-            with open(config_path, 'r') as f:
-                config = toml.load(f)
-        except Exception as e:
-            print(f"⚠️  Warning: Error loading config.toml: {e}")
-            print("   Will use environment variables instead")
+    db_host = os.getenv('DB_HOST')
+    db_port = int(os.getenv('DB_PORT', 5432))
+    db_name = os.getenv('DB_NAME')
+    db_user = os.getenv('DB_USER')
+    db_password = os.getenv('DB_PASSWORD')
 
-    # Get email credentials - Support both basic auth and OAuth2
+    # Validate credentials
+    if not all([tenant_id, client_id, client_secret, group_id]):
+        print("❌ Missing Azure credentials!")
+        print("   Set AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, GROUP_ID")
+        return 1
+
+    if not all([db_host, db_name, db_user, db_password]):
+        print("❌ Missing database credentials!")
+        print("   Set DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD")
+        return 1
+
+    # Connect to database
     try:
-        email_config = config.get('email', {})
-
-        imap_server = os.getenv('EMAIL_IMAP_SERVER') or email_config.get('imap_server', 'outlook.office365.com')
-        email_user = os.getenv('EMAIL_USER') or email_config.get('user')
-        email_pass = os.getenv('EMAIL_PASSWORD') or email_config.get('password')
-
-        # Check for OAuth2 credentials
-        azure_tenant_id = os.getenv('AZURE_TENANT_ID') or email_config.get('azure_tenant_id')
-        azure_client_id = os.getenv('AZURE_CLIENT_ID') or email_config.get('azure_client_id')
-        azure_client_secret = os.getenv('AZURE_CLIENT_SECRET') or email_config.get('azure_client_secret')
-
-        oauth_client = None
-
-        # Try OAuth2 first
-        if all([azure_tenant_id, azure_client_id, azure_client_secret, email_user]):
-            print("🔐 Using OAuth2 authentication (Azure AD)")
-            oauth_client = OAuth2EmailClient(
-                tenant_id=azure_tenant_id,
-                client_id=azure_client_id,
-                client_secret=azure_client_secret,
-                email_user=email_user
-            )
-
-        # Fall back to basic auth
-        elif email_pass and email_user:
-            print("🔑 Using basic authentication (app password)")
-            # email_pass will be used
-
-        else:
-            print("❌ Error: Email credentials not found")
-            print("\n   Option 1 - OAuth2 (Recommended for Office 365):")
-            print("   export EMAIL_USER='rec_team@volibits.com'")
-            print("   export AZURE_TENANT_ID='your-tenant-id'")
-            print("   export AZURE_CLIENT_ID='your-client-id'")
-            print("   export AZURE_CLIENT_SECRET='your-client-secret'")
-            print("\n   Option 2 - App Password:")
-            print("   export EMAIL_USER='rec_team@volibits.com'")
-            print("   export EMAIL_PASSWORD='your-app-password'")
-            print("   export EMAIL_IMAP_SERVER='outlook.office365.com'")
-            print("\n   Or add to config/config.toml")
-            sys.exit(1)
-
-    except Exception as e:
-        print(f"❌ Error loading email config: {e}")
-        sys.exit(1)
-
-    # Initialize database client - Environment variables take priority
-    try:
-        db_config = config.get('database', {})
-
-        db_host = os.getenv('DB_HOST') or db_config.get('host')
-        db_port = int(os.getenv('DB_PORT', '5432')) if os.getenv('DB_PORT') else db_config.get('port', 5432)
-        db_name = os.getenv('DB_NAME') or db_config.get('database')
-        db_user = os.getenv('DB_USER') or db_config.get('user')
-        db_pass = os.getenv('DB_PASSWORD') or db_config.get('password')
-
-        if not all([db_host, db_name, db_user, db_pass]):
-            print("❌ Error: Database credentials not found")
-            print("\n   Option 1 - Environment Variables:")
-            print("   export DB_HOST='your-db-host.supabase.com'")
-            print("   export DB_PORT='5432'")
-            print("   export DB_NAME='postgres'")
-            print("   export DB_USER='postgres.xxxxx'")
-            print("   export DB_PASSWORD='your-db-password'")
-            print("\n   Option 2 - Config File:")
-            print("   Add to config/config.toml")
-            sys.exit(1)
-
         db_client = PostgresClient(
             host=db_host,
             port=db_port,
             database=db_name,
             user=db_user,
-            password=db_pass
+            password=db_password
         )
-        print("✅ Database connected\n")
+        print("✅ Database connected")
+        print()
     except Exception as e:
         print(f"❌ Database connection failed: {e}")
-        sys.exit(1)
+        return 1
 
-    # Create monitor with appropriate auth method
+    # Create monitor
     monitor = EmailMonitor(
-        imap_server=imap_server,
-        email_user=email_user,
-        db_client=db_client,
-        email_pass=email_pass,
-        oauth_client=oauth_client
+        tenant_id=tenant_id,
+        client_id=client_id,
+        client_secret=client_secret,
+        group_id=group_id,
+        db_client=db_client
     )
 
-    # Run
-    if args.once:
-        # Check once and exit
-        if monitor.connect():
-            monitor.process_new_emails(
-                folder=args.folder,
-                mark_as_read=args.mark_read,
-                move_to_folder=args.move_to
-            )
-            monitor.disconnect()
+    # Run monitor
+    if args.continuous:
+        monitor.run_continuous(interval_seconds=args.interval, dry_run=args.dry_run)
     else:
-        # Continuous monitoring
-        monitor.run_continuous(check_interval_seconds=args.interval)
+        monitor.process_new_emails(max_emails=args.max_emails, dry_run=args.dry_run)
+
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

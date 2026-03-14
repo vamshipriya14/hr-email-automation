@@ -12,6 +12,20 @@ from typing import Dict, List, Optional, Tuple
 
 from pathlib import Path
 import sys
+"""
+Email Parser for HR Database Updates
+Parses forwarded emails and updates hrvolibit table
+"""
+import os
+import re
+import email
+from email import policy
+from email.parser import BytesParser
+from datetime import datetime
+from typing import Dict, List, Optional, Tuple
+
+from pathlib import Path
+import sys
 
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -53,8 +67,10 @@ class EmailParser:
         # First try to get from outer subject (if it happens to have the info)
         subject = self.raw_email.get('Subject', '')
 
-        # Remove "Fw:" or "Fwd:" prefix
+        # Remove "[EXTERNAL]:", "Fw:" or "Fwd:" prefix
+        subject = re.sub(r'^\[EXTERNAL\]:\s*', '', subject, flags=re.IGNORECASE)
         subject = re.sub(r'^(Fw|Fwd):\s*', '', subject, flags=re.IGNORECASE)
+        subject = re.sub(r'^Re:\s*', '', subject, flags=re.IGNORECASE)
 
         # Try to extract from outer subject first
         match = re.match(r'([A-Z]{2,3}):\s*(.+?)(?:_\d+)?$', subject.strip())
@@ -84,7 +100,7 @@ class EmailParser:
 
     def extract_original_sender(self) -> str:
         """
-        Extract the original sender from forwarded email content
+        Extract the original sender from forwarded email content OR email headers
         Returns username before @ (e.g., salman.ahmed from salman.ahmed@volibits.com)
 
         Looks for patterns like:
@@ -92,7 +108,7 @@ class EmailParser:
         """
         body = self.get_email_body()
 
-        # Pattern to find original sender in forwarded email
+        # Pattern to find original sender in forwarded email body
         patterns = [
             r'From:\s*([^<]+)\s*<([^>]+)>',
             r'From:\s*([^\n]+@[^\n]+)',
@@ -113,18 +129,37 @@ class EmailParser:
 
                 return email
 
+        # Fallback: Check email headers if not found in body
+        # (for Group emails or direct emails, not forwarded)
+        if self.raw_email:
+            from_header = self.raw_email.get('From', '')
+            if from_header:
+                # Extract email from "Name <email@domain.com>" or just "email@domain.com"
+                email_match = re.search(r'<([^>]+)>|([^\s<>]+@[^\s<>]+)', from_header)
+                if email_match:
+                    email = email_match.group(1) or email_match.group(2)
+                    email = email.strip()
+                    if '@' in email:
+                        username = email.split('@')[0].strip()
+                        return username
+
         return None
 
     def extract_client_recruiter(self) -> str:
         """
-        Extract client recruiter from To: field in forwarded email
+        Extract client recruiter from To: field in forwarded email body OR from email greeting
         Returns username before @ (e.g., amit.pal from amit.pal@birlasoft.com)
 
+        IMPORTANT: Client recruiter can NEVER be @volibits.com
+        Only extract if it's an external client email (NOT volibits domain)
+
         Looks for:
-        "To: Nisha Gupta <nisha.gupta@birlasoft.com>"
+        1. "To: Nisha Gupta <nisha.gupta@birlasoft.com>" (forwarded emails)
+        2. "Hi Ankita," or "Dear Ankita," (Group emails - extract from greeting)
         """
         body = self.get_email_body()
 
+        # Try extracting from To: field first (for forwarded emails)
         patterns = [
             r'To:\s*([^<]+)\s*<([^>]+)>',
             r'To:\s*([^\n]+@[^\n]+)',
@@ -138,6 +173,10 @@ class EmailParser:
                 else:
                     email = match.group(1).strip()
 
+                # IMPORTANT: Skip if this is a volibits.com email
+                if '@volibits.com' in email.lower() or '@volibits' in email.lower():
+                    continue
+
                 # Extract username before @ sign
                 if '@' in email:
                     username = email.split('@')[0].strip()
@@ -145,42 +184,88 @@ class EmailParser:
 
                 return email
 
+        # If To: not found, try extracting from email greeting (for Group emails)
+        # Look for patterns like "Hi Ankita," or "Dear John," at the start
+        greeting_patterns = [
+            r'(?:Hi|Hello|Dear)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s*[,:]',
+        ]
+
+        for pattern in greeting_patterns:
+            match = re.search(pattern, body, re.IGNORECASE)
+            if match:
+                name = match.group(1).strip()
+                # Convert name to lowercase for consistency (e.g., "Ankita" -> "ankita")
+                # Only use first name
+                first_name = name.split()[0].lower()
+                return first_name
+
         return None
 
     def get_email_body(self) -> str:
-        """Get plain text body of email"""
+        """
+        Get email body content (HTML preferred, fallback to plain text)
+
+        Returns HTML content if available (for table parsing),
+        otherwise returns plain text
+        """
+        html_body = None
+        text_body = None
+
         if self.raw_email.is_multipart():
             for part in self.raw_email.walk():
                 content_type = part.get_content_type()
-                if content_type == 'text/plain':
+                try:
+                    if content_type == 'text/html':
+                        html_body = part.get_content()
+                    elif content_type == 'text/plain':
+                        text_body = part.get_content()
+                except:
                     try:
-                        return part.get_content()
+                        content = part.get_payload(decode=True).decode('utf-8', errors='ignore')
+                        if content_type == 'text/html':
+                            html_body = content
+                        elif content_type == 'text/plain':
+                            text_body = content
                     except:
-                        return part.get_payload(decode=True).decode('utf-8', errors='ignore')
+                        pass
         else:
             try:
-                return self.raw_email.get_content()
+                content = self.raw_email.get_content()
+                content_type = self.raw_email.get_content_type()
+                if content_type == 'text/html':
+                    html_body = content
+                else:
+                    text_body = content
             except:
-                return self.raw_email.get_payload(decode=True).decode('utf-8', errors='ignore')
+                try:
+                    content = self.raw_email.get_payload(decode=True).decode('utf-8', errors='ignore')
+                    content_type = self.raw_email.get_content_type()
+                    if content_type == 'text/html':
+                        html_body = content
+                    else:
+                        text_body = content
+                except:
+                    pass
 
-        return ""
+        # Prefer HTML for table parsing, fallback to text
+        return html_body or text_body or ""
 
     def parse_candidate_table(self) -> List[Dict]:
         """
         Parse candidate data from email table
 
-        Handles vertical column format where headers are listed vertically
-        followed by values vertically:
-        JR No
-        Date
-        Skill
-        ...
-        33841
-        11-Mar-26
-        SAP Hybris
-        ...
+        Handles TWO formats:
+        1. Horizontal HTML table format (standard table with headers in first row)
+        2. Vertical column format (headers listed vertically, then values)
         """
         body = self.get_email_body()
+
+        # First try HTML table format (for Group emails and Outlook HTML emails)
+        html_candidates = self._parse_tabular_format(body)
+        if html_candidates:
+            return html_candidates
+
+        # Fallback to vertical format parsing (for plain text .eml files)
         lines = body.split('\n')
 
         # Find the start of the table (look for "JR No" or similar header)
@@ -372,6 +457,9 @@ class EmailParser:
             'JR No': 'jr_no',
             'JR Number': 'jr_no',
             'JR NO': 'jr_no',
+            'RH ID': 'jr_no',  # Recruitment/Requisition ID (used by some vendors)
+            'Req ID': 'jr_no',  # Requisition ID
+            'Job ID': 'jr_no',  # Job ID
             'Date': 'date',
             'Skill': 'general_skill',
             'General Skill': 'general_skill',
@@ -418,6 +506,9 @@ class EmailParser:
         field_mapping = {
             'JR No': 'jr_no',
             'JR Number': 'jr_no',
+            'RH ID': 'jr_no',  # Recruitment/Requisition ID
+            'Req ID': 'jr_no',  # Requisition ID
+            'Job ID': 'jr_no',  # Job ID
             'Date': 'date',
             'Skill': 'general_skill',
             'Candidate Name': 'name_of_candidate',
@@ -455,14 +546,106 @@ class EmailParser:
                         data[db_column] = value
 
     def _parse_tabular_format(self, body: str) -> List[Dict]:
-        """Parse data when it's in a clear tabular format"""
-        # This is a simplified parser - you may need to enhance it
-        # based on actual email formats
-        candidates = []
-        lines = body.split('\n')
+        """
+        Parse data when it's in a horizontal HTML table format
 
-        # Find the table headers and data
-        # Implementation depends on your specific email format
+        Handles HTML tables like:
+        <table>
+          <tr><th>SI No</th><th>RH ID</th><th>Name</th><th>Email</th>...</tr>
+          <tr><td>1</td><td>RH123</td><td>John Doe</td><td>john@example.com</td>...</tr>
+          <tr><td>2</td><td>RH124</td><td>Jane Smith</td><td>jane@example.com</td>...</tr>
+        </table>
+        """
+        candidates = []
+
+        # Check if this is HTML content
+        if '<table' not in body.lower() and '<tr' not in body.lower():
+            return candidates
+
+        # Try to extract table structure using regex
+        # Find all <tr>...</tr> sections
+        tr_pattern = r'<tr[^>]*>(.*?)</tr>'
+        rows = re.findall(tr_pattern, body, re.DOTALL | re.IGNORECASE)
+
+        if len(rows) < 2:  # Need at least header + 1 data row
+            return candidates
+
+        # Extract headers from first row (look for <th> or <td> tags)
+        headers = []
+        first_row = rows[0]
+
+        # Try <th> tags first (proper table headers)
+        th_pattern = r'<th[^>]*>(.*?)</th>'
+        header_cells = re.findall(th_pattern, first_row, re.DOTALL | re.IGNORECASE)
+
+        # If no <th>, try <td> tags (some tables use <td> for headers)
+        if not header_cells:
+            td_pattern = r'<td[^>]*>(.*?)</td>'
+            header_cells = re.findall(td_pattern, first_row, re.DOTALL | re.IGNORECASE)
+
+        # Clean headers (remove HTML tags, trim whitespace)
+        for cell in header_cells:
+            # Remove any remaining HTML tags
+            clean_cell = re.sub(r'<[^>]+>', '', cell).strip()
+            # Remove &nbsp; and other HTML entities
+            clean_cell = re.sub(r'&nbsp;', ' ', clean_cell)
+            clean_cell = re.sub(r'&[a-z]+;', '', clean_cell)
+            headers.append(clean_cell)
+
+        if not headers:
+            return candidates
+
+        # Determine if first row is actually data (not header)
+        # Check if first cell looks like a serial number (1, 2, 3...)
+        first_cell = headers[0] if headers else ''
+        first_row_is_data = re.match(r'^\d{1,2}$', first_cell)
+
+        # Parse data rows
+        start_idx = 0 if first_row_is_data else 1
+
+        # If first row is data, we need to infer headers from field positions
+        if first_row_is_data:
+            # Common header sequence for candidate tables
+            headers = ['SI No', 'Date', 'RH ID', 'Skill', 'Name', 'Contact Number', 'E-Mail Id',
+                      'Total Exp', 'Relevant Exp', 'Current CTC', 'Expected CTC', 'Notice Period',
+                      'Current Location', 'Preferred Location', 'Current Company']
+
+        td_pattern = r'<td[^>]*>(.*?)</td>'
+
+        for row in rows[start_idx:]:
+            # Extract all <td> cells from this row
+            cells = re.findall(td_pattern, row, re.DOTALL | re.IGNORECASE)
+
+            if len(cells) < 3:  # Need at least a few fields
+                continue
+
+            # Clean cell values
+            values = []
+            for cell in cells:
+                # Remove HTML tags
+                clean_cell = re.sub(r'<[^>]+>', '', cell).strip()
+                # Remove HTML entities
+                clean_cell = re.sub(r'&nbsp;', ' ', clean_cell)
+                clean_cell = re.sub(r'&[a-z]+;', '', clean_cell)
+                # Remove extra whitespace
+                clean_cell = ' '.join(clean_cell.split())
+                values.append(clean_cell)
+
+            # Map headers to values
+            candidate_data = {}
+            for i, header in enumerate(headers):
+                if i < len(values):
+                    db_field = self._map_header_to_field(header)
+                    if db_field:
+                        candidate_data[db_field] = values[i]
+
+            # Validate and add candidate
+            if self._is_valid_candidate(candidate_data):
+                candidates.append(candidate_data)
+
+            # Safety limit
+            if len(candidates) >= 20:
+                break
 
         return candidates
 
@@ -496,12 +679,8 @@ class EmailParser:
             if client_recruiter and 'client_recruiter' not in candidate:
                 candidate['client_recruiter'] = client_recruiter
 
-            # Set default status
-            if 'status' not in candidate:
-                candidate['status'] = 'Delivered'
-
-            if 'final_status' not in candidate:
-                candidate['final_status'] = 'Screen Pending'
+            # Do NOT set default status - leave empty (NULL)
+            # Status and final_status should be empty when inserting from email
 
             # Set delivery type based on sender and receiver domains
             if 'delivery_type' not in candidate:
@@ -716,14 +895,18 @@ class EmailProcessor:
                     placeholders.append('%s')
 
         # Add audit fields (created_by and created_date)
+        # Use recruiter email as created_by (email sender)
         # Note: created_date trigger will also set 'date' column if not provided
+        created_by_value = candidate.get('recruiter', 'email_parser')  # Use sender email
         fields.extend(['created_by', 'created_date'])
-        values.extend(['email_parser', datetime.now()])
+        values.extend([created_by_value, datetime.now()])
         placeholders.extend(['%s', '%s'])
 
         # Add modified fields
+        # Use recruiter email as modified_by (email sender)
+        modified_by_value = candidate.get('recruiter', 'email_parser')  # Use sender email
         fields.extend(['modified_by', 'modified_date'])
-        values.extend(['email_parser', datetime.now()])
+        values.extend([modified_by_value, datetime.now()])
         placeholders.extend(['%s', '%s'])
 
         query = f"""
@@ -841,3 +1024,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
