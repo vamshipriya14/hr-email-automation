@@ -347,6 +347,15 @@ class EmailMonitor:
                         candidate['client_recruiter'] = recipient_info['username']
                     # For internal emails, leave client_recruiter blank (no client)
 
+            # Debug: Show enriched fields for first candidate
+            if candidates and dry_run:
+                sample = candidates[0]
+                print(f"         📋 Sample candidate fields:")
+                print(f"            email_from: {sample.get('email_from', 'N/A')}")
+                print(f"            email_to: {sample.get('email_to', 'N/A')}")
+                print(f"            client_recruiter: {sample.get('client_recruiter', 'N/A')}")
+                print(f"            jr_no: {sample.get('jr_no', 'N/A')}")
+
             # Process candidates
             if candidates:
                 if dry_run:
