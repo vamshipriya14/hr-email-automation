@@ -355,6 +355,7 @@ class EmailMonitor:
                 print(f"            email_to: {sample.get('email_to', 'N/A')}")
                 print(f"            client_recruiter: {sample.get('client_recruiter', 'N/A')}")
                 print(f"            jr_no: {sample.get('jr_no', 'N/A')}")
+                print(f"            created_by/modified_by: {sample.get('email_from', 'N/A')}")
 
             # Process candidates
             if candidates:
@@ -419,13 +420,13 @@ class EmailMonitor:
                     values.append(trimmed_value)
                     placeholders.append('%s')
 
-        # Add audit fields
-        created_by_value = candidate.get('recruiter', 'email_monitor')
+        # Add audit fields (use email_from for full email address)
+        created_by_value = candidate.get('email_from', 'email_monitor')
         fields.extend(['created_by', 'created_date'])
         values.extend([created_by_value, datetime.now()])
         placeholders.extend(['%s', '%s'])
 
-        modified_by_value = candidate.get('recruiter', 'email_monitor')
+        modified_by_value = candidate.get('email_from', 'email_monitor')
         fields.extend(['modified_by', 'modified_date'])
         values.extend([modified_by_value, datetime.now()])
         placeholders.extend(['%s', '%s'])
