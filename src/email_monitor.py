@@ -25,7 +25,7 @@ class EmailMonitor:
     """Automated email monitoring and processing"""
 
     def __init__(self, tenant_id: str, client_id: str, client_secret: str,
-                 group_id: str, db_client: PostgresClient):
+                 group_id: str, db_client: PostgresClient, table_name: str = 'hrvolibit'):
         self.graph_client = GraphGroupClient(
             tenant_id=tenant_id,
             client_id=client_id,
@@ -34,6 +34,7 @@ class EmailMonitor:
         )
         self.db_client = db_client
         self.tracker = EmailTracker()
+        self.table_name = table_name
 
     def process_new_emails(self, max_emails: int = 50, dry_run: bool = False) -> Dict:
         """
@@ -432,7 +433,7 @@ class EmailMonitor:
         placeholders.extend(['%s', '%s'])
 
         query = f"""
-            INSERT INTO hrvolibit ({', '.join(fields)})
+            INSERT INTO {self.table_name} ({', '.join(fields)})
             VALUES ({', '.join(placeholders)})
         """
 
@@ -448,19 +449,19 @@ class EmailMonitor:
         contact = candidate.get('contact_number', '').strip()
 
         if email and contact:
-            query = "SELECT id FROM hrvolibit WHERE email_id = %s AND contact_number = %s LIMIT 1"
+            query = f"SELECT id FROM {self.table_name} WHERE email_id = %s AND contact_number = %s LIMIT 1"
             result = self.db_client.execute_query(query, (email, contact))
             if result and len(result) > 0:
                 return "DuplicateFound"
 
         if email:
-            query = "SELECT id FROM hrvolibit WHERE email_id = %s LIMIT 1"
+            query = f"SELECT id FROM {self.table_name} WHERE email_id = %s LIMIT 1"
             result = self.db_client.execute_query(query, (email,))
             if result and len(result) > 0:
                 return "DuplicateFound - Email"
 
         if contact:
-            query = "SELECT id FROM hrvolibit WHERE contact_number = %s LIMIT 1"
+            query = f"SELECT id FROM {self.table_name} WHERE contact_number = %s LIMIT 1"
             result = self.db_client.execute_query(query, (contact,))
             if result and len(result) > 0:
                 return "DuplicateFound - Contact"
@@ -528,6 +529,7 @@ def main():
     db_name = os.getenv('DB_NAME')
     db_user = os.getenv('DB_USER')
     db_password = os.getenv('DB_PASSWORD')
+    table_name = os.getenv('TABLE_NAME', 'hrvolibit')  # Default to 'hrvolibit' if not set
 
     # Validate credentials
     if not all([tenant_id, client_id, client_secret, group_id]):
@@ -561,7 +563,8 @@ def main():
         client_id=client_id,
         client_secret=client_secret,
         group_id=group_id,
-        db_client=db_client
+        db_client=db_client,
+        table_name=table_name
     )
 
     # Run monitor
