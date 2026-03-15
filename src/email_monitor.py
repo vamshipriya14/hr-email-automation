@@ -108,8 +108,8 @@ class EmailMonitor:
                 stats['new'] += 1
                 print(f"         🆕 NEW EMAIL - Processing...")
 
-                # Process the email
-                result = self._process_email(best_post, thread_id, topic, dry_run)
+                # Process the email (pass all posts for email lookup)
+                result = self._process_email(best_post, posts, thread_id, topic, dry_run)
 
                 if result['success']:
                     stats['processed'] += 1
@@ -175,6 +175,64 @@ class EmailMonitor:
 
         return stats
 
+    def _find_recipient_email(self, body_content: str, all_posts: List[Dict]) -> Dict:
+        """
+        Find recipient email (client or internal) by:
+        1. Extracting name from greeting (e.g., "Hi Ankita,")
+        2. Looking up that name in thread posts to find email address
+
+        Returns:
+            Dict with:
+            - 'email': full email address
+            - 'username': username before @ (for client_recruiter)
+            - 'is_external': True if external client, False if internal volibits
+            or None if not found
+        """
+        import re
+
+        # Extract name from greeting
+        greeting_patterns = [
+            r'(?:Hi|Hello|Dear)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s*[,:]',
+        ]
+
+        greeting_name = None
+        for pattern in greeting_patterns:
+            match = re.search(pattern, body_content, re.IGNORECASE)
+            if match:
+                greeting_name = match.group(1).strip()
+                break
+
+        if not greeting_name:
+            return None
+
+        # Search all posts for a sender matching this name
+        for post in all_posts:
+            from_info = post.get('from', {})
+            email_info = from_info.get('emailAddress', {})
+            sender_name = email_info.get('name', '')
+            sender_email = email_info.get('address', '')
+
+            # Check if sender name contains the greeting name
+            # e.g., "Ankita" matches "Ankita Sharma" or just "Ankita"
+            if greeting_name.lower() in sender_name.lower():
+                # Found the recipient!
+                username = sender_email.split('@')[0].strip() if '@' in sender_email else sender_email
+                is_external = '@volibits.com' not in sender_email.lower()
+
+                return {
+                    'email': sender_email,
+                    'username': username,
+                    'is_external': is_external
+                }
+
+        # If not found in posts, assume external and return just the first name
+        first_name = greeting_name.split()[0].lower()
+        return {
+            'email': None,
+            'username': first_name,
+            'is_external': True  # Assume external if not found
+        }
+
     def _find_best_post(self, posts: List[Dict]) -> Dict:
         """
         Find the post with candidate data by actually parsing each post
@@ -227,7 +285,7 @@ class EmailMonitor:
 
         return best_post
 
-    def _process_email(self, post: Dict, thread_id: str, topic: str,
+    def _process_email(self, post: Dict, all_posts: List[Dict], thread_id: str, topic: str,
                       dry_run: bool = False) -> Dict:
         """
         Process a single email post
@@ -266,6 +324,28 @@ class EmailMonitor:
             parser = EmailParser(str(temp_file))
             parsed_data = parser.parse()
             candidates = parsed_data.get('candidates', [])
+
+            # Extract recipient email by looking up greeting name in thread posts
+            # Returns dict with 'email' (full), 'username' (before @), 'is_external'
+            recipient_info = self._find_recipient_email(body_content, all_posts)
+
+            # Get sender email (full address)
+            sender_full_email = from_info.get('emailAddress', {}).get('address', sender)
+
+            # Enrich candidates with email metadata
+            for candidate in candidates:
+                # Set email_from (sender's full email address)
+                candidate['email_from'] = sender_full_email
+
+                if recipient_info:
+                    # Set email_to (recipient's full email address)
+                    if recipient_info.get('email'):
+                        candidate['email_to'] = recipient_info['email']
+
+                    # Set client_recruiter ONLY for external emails
+                    if recipient_info.get('is_external') and recipient_info.get('username'):
+                        candidate['client_recruiter'] = recipient_info['username']
+                    # For internal emails, leave client_recruiter blank (no client)
 
             # Process candidates
             if candidates:
@@ -361,19 +441,19 @@ class EmailMonitor:
             query = "SELECT id FROM hrvolibit WHERE email_id = %s AND contact_number = %s LIMIT 1"
             result = self.db_client.execute_query(query, (email, contact))
             if result and len(result) > 0:
-                return "duplicate"
+                return "DuplicateFound"
 
         if email:
             query = "SELECT id FROM hrvolibit WHERE email_id = %s LIMIT 1"
             result = self.db_client.execute_query(query, (email,))
             if result and len(result) > 0:
-                return "duplicate email"
+                return "DuplicateFound - Email"
 
         if contact:
             query = "SELECT id FROM hrvolibit WHERE contact_number = %s LIMIT 1"
             result = self.db_client.execute_query(query, (contact,))
             if result and len(result) > 0:
-                return "duplicate cell"
+                return "DuplicateFound - Contact"
 
         return None
 
