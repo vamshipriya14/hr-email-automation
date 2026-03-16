@@ -192,8 +192,6 @@ class EmailParser:
         """
         participants = []
 
-        print(f"  🔍 DEBUG: Extracting participants from {len(self.thread_posts)} thread posts")
-
         for post in self.thread_posts:
             # Extract FROM participant
             from_info = post.get('from', {})
@@ -203,7 +201,6 @@ class EmailParser:
                     name = email_info.get('name', '')
                     email_addr = email_info.get('address', '')
                     if email_addr:
-                        print(f"    📧 Found FROM: {name} <{email_addr}>")
                         participants.append({'name': name, 'email': email_addr})
 
             # Extract TO recipients
@@ -215,10 +212,8 @@ class EmailParser:
                         name = email_info.get('name', '')
                         email_addr = email_info.get('address', '')
                         if email_addr:
-                            print(f"    📧 Found TO: {name} <{email_addr}>")
                             participants.append({'name': name, 'email': email_addr})
 
-        print(f"  ✅ Total participants found: {len(participants)}")
         return participants
 
     def _find_email_by_name(self, name: str) -> Optional[str]:
@@ -231,11 +226,7 @@ class EmailParser:
         Returns:
             Full email address if found (e.g., "ankita.sharma@birlasoft.com")
         """
-        print(f"  🔍 DEBUG: Finding email for name: '{name}'")
-        print(f"  🔍 DEBUG: thread_posts available: {len(self.thread_posts) if self.thread_posts else 0}")
-
         if not name or not self.thread_posts:
-            print(f"  ❌ DEBUG: Returning None (name={bool(name)}, thread_posts={bool(self.thread_posts)})")
             return None
 
         # Get all participant info (name and email)
@@ -244,7 +235,6 @@ class EmailParser:
         # Search for participant whose NAME contains the greeting name
         # (Same logic as email_monitor.py _find_recipient_email method)
         name_lower = name.lower()
-        print(f"  🔍 DEBUG: Searching for '{name_lower}' in {len(participants)} participants")
 
         for participant in participants:
             participant_name = participant.get('name', '')
@@ -252,16 +242,12 @@ class EmailParser:
 
             # Skip volibits emails
             if '@volibits.com' in participant_email or '@volibits' in participant_email:
-                print(f"    ⏭️  Skipping volibits participant: {participant_name} <{participant_email}>")
                 continue
 
             participant_name_lower = participant_name.lower()
-            print(f"    🔍 Checking: '{name_lower}' in '{participant_name}' (lowered: '{participant_name_lower}')")
 
             # Strategy 1: Direct match - check if greeting name is in display name
             if name_lower in participant_name_lower:
-                print(f"  ✅ DEBUG: MATCH FOUND! '{name_lower}' in '{participant_name}'")
-                print(f"  ✅ DEBUG: Returning: {participant_email}")
                 return participant_email
 
             # Strategy 2: Fuzzy match - handle spelling variations (ankita vs ankitha)
@@ -283,14 +269,10 @@ class EmailParser:
 
                     # If 80% or more characters match in position, consider it a match
                     similarity = matching_chars / min_len
-                    print(f"    🔍 Comparing '{name_lower}' vs '{word}': {matching_chars}/{min_len} chars match ({similarity:.0%})")
 
                     if similarity >= 0.8:  # 80% similarity threshold
-                        print(f"  ✅ DEBUG: FUZZY MATCH! '{name_lower}' ≈ '{word}' ({similarity:.0%} similar)")
-                        print(f"  ✅ DEBUG: Returning: {participant_email}")
                         return participant_email
 
-        print(f"  ❌ DEBUG: No matching participant found for '{name_lower}'")
         return None
 
     def extract_client_recruiter(self) -> str:
