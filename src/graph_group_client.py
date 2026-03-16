@@ -103,33 +103,50 @@ class GraphGroupClient:
         List email threads in the group
 
         Args:
-            max_results: Maximum number of threads
-            today_only: If True, only fetch threads from today
+            max_results: Maximum number of threads to return
+            today_only: If True, only return threads from today (client-side filter)
 
         Returns:
             List of thread metadata
         """
         url = f"{self.graph_api_endpoint}/groups/{self.group_id}/threads"
 
+        # Fetch more threads if filtering for today (to ensure we get enough after filtering)
+        fetch_count = max_results * 3 if today_only else max_results
+
         params = {
-            '$top': max_results,
+            '$top': fetch_count,
             '$orderby': 'lastDeliveredDateTime desc'
         }
-
-        # Add filter for today's emails only
-        if today_only:
-            from datetime import datetime, timezone
-            today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-            today_iso = today_start.isoformat()
-            params['$filter'] = f"lastDeliveredDateTime ge {today_iso}"
 
         try:
             response = requests.get(url, headers=self.get_headers(), params=params, timeout=30)
             response.raise_for_status()
             data = response.json()
             threads = data.get('value', [])
-            logger.info(f"Found {len(threads)} threads" + (" (today only)" if today_only else ""))
-            return threads
+
+            # Client-side filter for today's threads
+            if today_only:
+                from datetime import datetime, timezone
+                today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+
+                filtered_threads = []
+                for thread in threads:
+                    last_delivered = thread.get('lastDeliveredDateTime', '')
+                    if last_delivered:
+                        # Parse the datetime string
+                        thread_time = datetime.fromisoformat(last_delivered.replace('Z', '+00:00'))
+                        if thread_time >= today_start:
+                            filtered_threads.append(thread)
+                            if len(filtered_threads) >= max_results:
+                                break
+
+                threads = filtered_threads
+                logger.info(f"Found {len(threads)} threads (today only)")
+            else:
+                logger.info(f"Found {len(threads)} threads")
+
+            return threads[:max_results]  # Limit to max_results
         except Exception as e:
             logger.error(f"Failed to list threads: {e}")
             raise
