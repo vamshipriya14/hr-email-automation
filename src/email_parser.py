@@ -325,16 +325,13 @@ class EmailParser:
                 name = match.group(1).strip()
                 # Only use first name
                 first_name = name.split()[0].lower()
-                print(f"  🔍 DEBUG: Extracted first name from greeting: '{first_name}'")
 
                 # Try to find full email address from thread participants
                 full_email = self._find_email_by_name(first_name)
                 if full_email:
-                    print(f"  ✅ DEBUG: Returning full email: {full_email}")
                     return full_email
 
                 # Fallback: return just the first name if no matching email found
-                print(f"  ⚠️  DEBUG: No email found, returning first name: {first_name}")
                 return first_name
 
         return None
