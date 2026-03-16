@@ -236,6 +236,52 @@ def main():
 
         received_date = best_post.get('receivedDateTime', '')
 
+        # Try to get MIME content to extract To: header
+        post_id = best_post.get('id')
+        mime_to_header = None
+        if post_id:
+            try:
+                print(f"🔍 Fetching MIME content for post {post_id[:20]}...")
+                mime_content = client.get_post_mime(thread_id, post_id)
+
+                # Parse MIME to extract To: header
+                import email
+                from email import policy
+                from io import BytesIO
+
+                msg = email.message_from_string(mime_content, policy=policy.default)
+                to_header = msg.get('To', '')
+                cc_header = msg.get('Cc', '')
+
+                print(f"📧 MIME To: {to_header}")
+                print(f"📧 MIME Cc: {cc_header}")
+
+                # Extract email from To: header
+                if to_header:
+                    # Parse "Name <email@domain.com>" format
+                    import re
+                    email_match = re.search(r'<([^>]+)>|([^\s<>]+@[^\s<>]+)', to_header)
+                    if email_match:
+                        mime_to_header = email_match.group(1) or email_match.group(2)
+                        # Skip volibits emails
+                        if mime_to_header and '@volibits.com' not in mime_to_header.lower():
+                            print(f"✅ Found client email in To: header: {mime_to_header}")
+                        else:
+                            mime_to_header = None
+
+                # Try CC if To didn't work
+                if not mime_to_header and cc_header:
+                    email_match = re.search(r'<([^>]+)>|([^\s<>]+@[^\s<>]+)', cc_header)
+                    if email_match:
+                        mime_to_header = email_match.group(1) or email_match.group(2)
+                        if mime_to_header and '@volibits.com' not in mime_to_header.lower():
+                            print(f"✅ Found client email in Cc: header: {mime_to_header}")
+                        else:
+                            mime_to_header = None
+
+            except Exception as e:
+                print(f"⚠️  Could not fetch MIME content: {e}")
+
         body_info = best_post.get('body', {})
         body_content = body_info.get('content', '')
         body_type = body_info.get('contentType', 'text')
@@ -246,6 +292,8 @@ def main():
         print(f"   Received: {received_date}")
         print(f"   Body Type: {body_type}")
         print(f"   Body Length: {len(body_content)} chars")
+        if mime_to_header:
+            print(f"   📧 Client Email (from MIME): {mime_to_header}")
         print()
 
         # Show body preview
