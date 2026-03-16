@@ -52,7 +52,8 @@ jobs:
         run: |
           # Run once (not continuous mode)
           # GitHub Actions will re-run this every 5 minutes via cron
-          python src/email_monitor.py --max-emails 50
+          # Use --today-only to process only current day's emails
+          python src/email_monitor.py --max-emails 50 --today-only
 
       - name: Save processed emails cache
         if: always()
@@ -69,4 +70,4 @@ jobs:
           path: |
             data/processed_emails.json
             *.log
-          retention-days: 7
+          retention-days: 30
