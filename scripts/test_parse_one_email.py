@@ -206,9 +206,9 @@ def main():
             with open(temp_file, 'wb') as f:
                 f.write(msg.as_bytes())
 
-            # Parse
+            # Parse (pass thread posts for participant email matching)
             try:
-                parser = EmailParser(str(temp_file))
+                parser = EmailParser(str(temp_file), thread_posts=posts)
                 parsed_data = parser.parse()
                 num_candidates = len(parsed_data.get('candidates', []))
 
@@ -275,8 +275,8 @@ def main():
         with open(temp_file, 'wb') as f:
             f.write(msg.as_bytes())
 
-        # Parse with EmailParser
-        parser = EmailParser(str(temp_file))
+        # Parse with EmailParser (pass thread posts for participant email matching)
+        parser = EmailParser(str(temp_file), thread_posts=posts)
         parsed_data = parser.parse()
         candidates = parsed_data.get('candidates', [])
 
