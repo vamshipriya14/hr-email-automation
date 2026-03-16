@@ -9,6 +9,7 @@ from pathlib import Path
 import email
 from email import policy
 from io import BytesIO
+import re
 
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
@@ -21,6 +22,72 @@ except ImportError:
     from src.graph_group_client import GraphGroupClient
     from src.email_parser import EmailParser
     from src.database import PostgresClient
+
+
+def display_raw_table(body: str):
+    """Display the raw table extracted from email body"""
+    print("\n" + "=" * 80)
+    print("📋 RAW TABLE CONTENT")
+    print("=" * 80 + "\n")
+
+    # Check if this is HTML content with table
+    if '<table' in body.lower():
+        # Extract HTML table
+        table_pattern = r'<table[^>]*>.*?</table>'
+        tables = re.findall(table_pattern, body, re.DOTALL | re.IGNORECASE)
+
+        if tables:
+            print("HTML TABLE FORMAT")
+            print("-" * 80)
+            for i, table in enumerate(tables, 1):
+                print(f"\nTable {i}:")
+                # Show first 2000 chars
+                table_preview = table[:2000]
+                print(table_preview)
+                if len(table) > 2000:
+                    print(f"\n... (truncated, total length: {len(table)} chars)")
+            print("-" * 80)
+        else:
+            print("❌ No HTML table found")
+
+    # Also try to find text-based table
+    lines = body.split('\n')
+    table_start = -1
+    table_end = -1
+
+    # Find table boundaries (look for headers)
+    for i, line in enumerate(lines):
+        line_upper = line.strip().upper()
+        if ('JR NO' in line_upper or 'JR NUMBER' in line_upper or
+            'SI NO' in line_upper or 'GENERAL SKILL' in line_upper or
+            'VENDOR NAME' in line_upper):
+            table_start = i
+            break
+
+    if table_start >= 0:
+        # Find table end (look for signature or footer)
+        for i in range(table_start, min(table_start + 200, len(lines))):
+            line_lower = lines[i].lower()
+            if any(keyword in line_lower for keyword in
+                   ['regards', 'thanks', 'sincerely', 'best', 'signature',
+                    'volibits', 'confidential', 'disclaimer']):
+                table_end = i
+                break
+
+        if table_end < 0:
+            table_end = min(table_start + 100, len(lines))
+
+        print("\nTEXT TABLE FORMAT")
+        print("-" * 80)
+        for line in lines[table_start:table_end]:
+            if line.strip():
+                print(line)
+        print("-" * 80)
+    else:
+        if '<table' not in body.lower():
+            print("\n❌ No text-based table found")
+
+    print("\n" + "=" * 80 + "\n")
 
 def main():
     print("=" * 80)
@@ -188,6 +255,9 @@ def main():
         print(preview + "...")
         print("-" * 80)
         print()
+
+        # Display raw table
+        display_raw_table(body_content)
 
         # Try to parse candidates from best post
         print("🔍 Attempting to parse candidates...")
