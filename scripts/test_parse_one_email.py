@@ -15,11 +15,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
 try:
     from graph_group_client import GraphGroupClient
+    from graph_email_client import GraphEmailClient
     from email_parser import EmailParser
     from database import PostgresClient
 except ImportError:
     sys.path.insert(0, str(Path(__file__).parent.parent))
     from src.graph_group_client import GraphGroupClient
+    from src.graph_email_client import GraphEmailClient
     from src.email_parser import EmailParser
     from src.database import PostgresClient
 
@@ -236,46 +238,44 @@ def main():
 
         received_date = best_post.get('receivedDateTime', '')
 
-        # Try to get MIME content to extract To: header
-        post_id = best_post.get('id')
+        # Look up real To: email from sender's Sent Items
         mime_to_header = None
-        if post_id:
+        tenant_id = os.getenv('AZURE_TENANT_ID')
+        client_id_val = os.getenv('AZURE_CLIENT_ID')
+        client_secret = os.getenv('AZURE_CLIENT_SECRET')
+        if sender and '@volibits.com' in sender.lower():
             try:
-                print(f"🔍 Fetching MIME content for post {post_id[:20]}...")
-                mime_content = client.get_post_mime(thread_id, post_id)
-
-                # Parse MIME to extract To: header
-                msg = email.message_from_string(mime_content, policy=policy.default)
-                to_header = msg.get('To', '')
-                cc_header = msg.get('Cc', '')
-
-                print(f"📧 MIME To: {to_header}")
-                print(f"📧 MIME Cc: {cc_header}")
-
-                # Extract email from To: header
-                if to_header:
-                    # Parse "Name <email@domain.com>" format
-                    email_match = re.search(r'<([^>]+)>|([^\s<>]+@[^\s<>]+)', to_header)
-                    if email_match:
-                        mime_to_header = email_match.group(1) or email_match.group(2)
-                        # Skip volibits emails
-                        if mime_to_header and '@volibits.com' not in mime_to_header.lower():
-                            print(f"✅ Found client email in To: header: {mime_to_header}")
-                        else:
-                            mime_to_header = None
-
-                # Try CC if To didn't work
-                if not mime_to_header and cc_header:
-                    email_match = re.search(r'<([^>]+)>|([^\s<>]+@[^\s<>]+)', cc_header)
-                    if email_match:
-                        mime_to_header = email_match.group(1) or email_match.group(2)
-                        if mime_to_header and '@volibits.com' not in mime_to_header.lower():
-                            print(f"✅ Found client email in Cc: header: {mime_to_header}")
-                        else:
-                            mime_to_header = None
-
+                print(f"🔍 Looking up To: from sender's Sent Items ({sender})...")
+                user_client = GraphEmailClient(
+                    tenant_id=tenant_id,
+                    client_id=client_id_val,
+                    client_secret=client_secret,
+                    email_user=sender
+                )
+                import requests as req
+                url = f"https://graph.microsoft.com/v1.0/users/{sender}/mailFolders/sentitems/messages"
+                safe_subject = topic.replace("'", "''")
+                params = {
+                    '$filter': f"subject eq '{safe_subject}'",
+                    '$select': 'id,toRecipients,subject,sentDateTime',
+                    '$top': 1,
+                    '$orderby': 'sentDateTime desc'
+                }
+                resp = req.get(url, headers=user_client.get_headers(), params=params, timeout=30)
+                resp.raise_for_status()
+                messages = resp.json().get('value', [])
+                if messages:
+                    for r in messages[0].get('toRecipients', []):
+                        addr = r.get('emailAddress', {}).get('address', '')
+                        name = r.get('emailAddress', {}).get('name', '')
+                        if addr and '@volibits.com' not in addr.lower():
+                            mime_to_header = addr
+                            print(f"✅ Found To: {name} <{addr}>")
+                            break
+                if not mime_to_header:
+                    print(f"⚠️  No external recipient found in Sent Items")
             except Exception as e:
-                print(f"⚠️  Could not fetch MIME content: {e}")
+                print(f"⚠️  Sender inbox lookup failed: {e}")
 
         body_info = best_post.get('body', {})
         body_content = body_info.get('content', '')
