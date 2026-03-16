@@ -682,26 +682,27 @@ class EmailParser:
             # Do NOT set default status - leave empty (NULL)
             # Status and final_status should be empty when inserting from email
 
-            # Set delivery type based on sender and receiver domains
-            if 'delivery_type' not in candidate:
-                # Get full email addresses to check domains
-                sender_email = self.raw_email.get('From', '')
-                receiver_email = self.raw_email.get('To', '')
-
-                # Check if both are volibits emails
-                is_sender_volibits = '@volibits.com' in sender_email.lower() or '@volibits' in sender_email.lower()
-                is_receiver_volibits = '@volibits.com' in receiver_email.lower() or '@volibits' in receiver_email.lower()
-
-                if is_sender_volibits and is_receiver_volibits:
-                    candidate['delivery_type'] = 'Internal'
-                else:
-                    candidate['delivery_type'] = 'External'
-
             # Store email metadata
             if recruiter_email:
                 candidate['email_from'] = recruiter_email
             if client_recruiter:
                 candidate['email_to'] = client_recruiter
+
+            # Set delivery type based on email_from and email_to
+            # Internal: both From and To are Volibits emails
+            # External: either From or To is not Volibits
+            if 'delivery_type' not in candidate:
+                email_from = candidate.get('email_from', '')
+                email_to = candidate.get('email_to', '')
+
+                # Check if both are volibits emails
+                is_from_volibits = '@volibits.com' in email_from.lower() if email_from else False
+                is_to_volibits = '@volibits.com' in email_to.lower() if email_to else False
+
+                if is_from_volibits and is_to_volibits:
+                    candidate['delivery_type'] = 'Internal'
+                else:
+                    candidate['delivery_type'] = 'External'
 
             # Set date to today if not provided (will be overridden by trigger)
             if 'date' not in candidate or not candidate['date']:
