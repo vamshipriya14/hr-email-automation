@@ -143,7 +143,7 @@ class EmailParser:
     def extract_original_sender(self) -> str:
         """
         Extract the original sender from forwarded email content OR email headers
-        Returns username before @ (e.g., salman.ahmed from salman.ahmed@volibits.com)
+        Returns full email address (e.g., salman.ahmed@volibits.com)
 
         Looks for patterns like:
         "From: Salman Ahmed <salman.ahmed@volibits.com>"
@@ -164,10 +164,9 @@ class EmailParser:
                 else:
                     email = match.group(1).strip()
 
-                # Extract username before @ sign
+                # Return full email address
                 if '@' in email:
-                    username = email.split('@')[0].strip()
-                    return username
+                    return email.strip()
 
                 return email
 
@@ -182,8 +181,7 @@ class EmailParser:
                     email = email_match.group(1) or email_match.group(2)
                     email = email.strip()
                     if '@' in email:
-                        username = email.split('@')[0].strip()
-                        return username
+                        return email
 
         return None
 
