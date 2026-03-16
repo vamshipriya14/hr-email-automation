@@ -114,9 +114,9 @@ def main():
         group_id=group_id
     )
 
-    # Get threads
-    print("📬 Fetching recent threads...")
-    threads = client.list_threads(max_results=10)
+    # Get threads (today only)
+    print("📬 Fetching recent threads (today only)...")
+    threads = client.list_threads(max_results=50, today_only=True)
 
     if not threads:
         print("❌ No threads found!")
