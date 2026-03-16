@@ -98,12 +98,13 @@ class GraphGroupClient:
             logger.error(f"Failed to list conversations: {e}")
             raise
 
-    def list_threads(self, max_results: int = 50) -> List[Dict[str, Any]]:
+    def list_threads(self, max_results: int = 50, today_only: bool = False) -> List[Dict[str, Any]]:
         """
         List email threads in the group
 
         Args:
             max_results: Maximum number of threads
+            today_only: If True, only fetch threads from today
 
         Returns:
             List of thread metadata
@@ -115,12 +116,19 @@ class GraphGroupClient:
             '$orderby': 'lastDeliveredDateTime desc'
         }
 
+        # Add filter for today's emails only
+        if today_only:
+            from datetime import datetime, timezone
+            today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+            today_iso = today_start.isoformat()
+            params['$filter'] = f"lastDeliveredDateTime ge {today_iso}"
+
         try:
             response = requests.get(url, headers=self.get_headers(), params=params, timeout=30)
             response.raise_for_status()
             data = response.json()
             threads = data.get('value', [])
-            logger.info(f"Found {len(threads)} threads")
+            logger.info(f"Found {len(threads)} threads" + (" (today only)" if today_only else ""))
             return threads
         except Exception as e:
             logger.error(f"Failed to list threads: {e}")

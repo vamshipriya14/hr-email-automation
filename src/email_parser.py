@@ -98,6 +98,47 @@ class EmailParser:
 
         return None, None
 
+    def extract_jr_from_subject(self) -> Optional[str]:
+        """
+        Extract JR number from subject line as fallback
+
+        Handles patterns like:
+        - "Profiles for Boomi Developer (Jr. 29258)"
+        - "Profiles for Boomi Developer (JR 29258)"
+        - "Boomi Developer (jr no 29258)"
+        - "Boomi Developer (jr.no 29258)"
+        - "Boomi Developer JR29258"
+
+        Returns:
+            JR number string or None
+        """
+        # Get subject from email header
+        subject = self.raw_email.get('Subject', '')
+
+        # Remove common prefixes
+        subject = re.sub(r'^\[EXTERNAL\]:\s*', '', subject, flags=re.IGNORECASE)
+        subject = re.sub(r'^(Fw|Fwd):\s*', '', subject, flags=re.IGNORECASE)
+        subject = re.sub(r'^Re:\s*', '', subject, flags=re.IGNORECASE)
+
+        # Try to find JR number patterns
+        # Pattern 1: (Jr. 29258), (JR 29258), (jr no 29258), (jr.no 29258)
+        match = re.search(r'\(Jr[\.\s]*(?:no)?[\.\s]*(\d+)\)', subject, re.IGNORECASE)
+        if match:
+            return match.group(1)
+
+        # Pattern 2: Jr 29258, JR29258, jr.no 29258, jr no 29258 (without parentheses)
+        match = re.search(r'Jr[\.\s]*(?:no)?[\.\s]*(\d{4,6})', subject, re.IGNORECASE)
+        if match:
+            return match.group(1)
+
+        # Also check in email body for forwarded subject
+        body = self.get_email_body()
+        match = re.search(r'Subject:.*?\(Jr[\.\s]*(?:no)?[\.\s]*(\d+)\)', body, re.IGNORECASE)
+        if match:
+            return match.group(1)
+
+        return None
+
     def extract_original_sender(self) -> str:
         """
         Extract the original sender from forwarded email content OR email headers
@@ -662,6 +703,9 @@ class EmailParser:
         recruiter_email = self.extract_original_sender()
         client_recruiter = self.extract_client_recruiter()
 
+        # Extract JR number from subject as fallback
+        jr_from_subject = self.extract_jr_from_subject()
+
         # Parse candidate data
         candidates = self.parse_candidate_table()
 
@@ -678,6 +722,10 @@ class EmailParser:
 
             if client_recruiter and 'client_recruiter' not in candidate:
                 candidate['client_recruiter'] = client_recruiter
+
+            # Use JR from subject as fallback if not in candidate data
+            if jr_from_subject and ('jr_no' not in candidate or not candidate.get('jr_no')):
+                candidate['jr_no'] = jr_from_subject
 
             # Do NOT set default status - leave empty (NULL)
             # Status and final_status should be empty when inserting from email

@@ -36,13 +36,14 @@ class EmailMonitor:
         self.tracker = EmailTracker()
         self.table_name = table_name
 
-    def process_new_emails(self, max_emails: int = 50, dry_run: bool = False) -> Dict:
+    def process_new_emails(self, max_emails: int = 50, dry_run: bool = False, today_only: bool = False) -> Dict:
         """
         Process new emails from the group
 
         Args:
             max_emails: Maximum number of emails to check
             dry_run: If True, don't actually insert to database
+            today_only: If True, only process emails from today
 
         Returns:
             Dict with processing statistics
@@ -58,13 +59,15 @@ class EmailMonitor:
 
         print("\n" + "=" * 80)
         print(f"📧 EMAIL MONITORING - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        if today_only:
+            print("   (Processing today's emails only)")
         print("=" * 80)
         print()
 
         # Get recent threads
         try:
-            print(f"📬 Fetching up to {max_emails} recent threads...")
-            threads = self.graph_client.list_threads(max_results=max_emails)
+            print(f"📬 Fetching up to {max_emails} recent threads" + (" from today..." if today_only else "..."))
+            threads = self.graph_client.list_threads(max_results=max_emails, today_only=today_only)
             print(f"   ✅ Found {len(threads)} threads")
             print()
         except Exception as e:
@@ -468,19 +471,21 @@ class EmailMonitor:
 
         return None
 
-    def run_continuous(self, interval_seconds: int = 300, dry_run: bool = False):
+    def run_continuous(self, interval_seconds: int = 300, dry_run: bool = False, today_only: bool = False):
         """
         Run monitor continuously
 
         Args:
             interval_seconds: Time between checks (default: 300 = 5 minutes)
             dry_run: If True, don't actually insert to database
+            today_only: If True, only process emails from today
         """
         print("=" * 80)
         print("🚀 STARTING CONTINUOUS EMAIL MONITORING")
         print("=" * 80)
         print(f"Check interval: {interval_seconds} seconds ({interval_seconds/60} minutes)")
         print(f"Dry run mode: {dry_run}")
+        print(f"Today only: {today_only}")
         print()
         print("Press Ctrl+C to stop")
         print("=" * 80)
@@ -488,7 +493,7 @@ class EmailMonitor:
 
         try:
             while True:
-                self.process_new_emails(max_emails=50, dry_run=dry_run)
+                self.process_new_emails(max_emails=50, dry_run=dry_run, today_only=today_only)
 
                 print(f"⏰ Waiting {interval_seconds} seconds until next check...")
                 print()
@@ -515,6 +520,8 @@ def main():
                        help='Dry run - do not insert to database')
     parser.add_argument('--max-emails', type=int, default=50,
                        help='Maximum emails to check per run (default: 50)')
+    parser.add_argument('--today-only', action='store_true',
+                       help='Only process emails from today (current day)')
 
     args = parser.parse_args()
 
@@ -569,9 +576,9 @@ def main():
 
     # Run monitor
     if args.continuous:
-        monitor.run_continuous(interval_seconds=args.interval, dry_run=args.dry_run)
+        monitor.run_continuous(interval_seconds=args.interval, dry_run=args.dry_run, today_only=args.today_only)
     else:
-        monitor.process_new_emails(max_emails=args.max_emails, dry_run=args.dry_run)
+        monitor.process_new_emails(max_emails=args.max_emails, dry_run=args.dry_run, today_only=args.today_only)
 
     return 0
 
