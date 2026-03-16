@@ -43,10 +43,11 @@ except ImportError:
 class EmailParser:
     """Parse candidate emails and extract structured data"""
 
-    def __init__(self, email_path: str):
+    def __init__(self, email_path: str, thread_posts: list = None):
         self.email_path = email_path
         self.raw_email = None
         self.parsed_data = {}
+        self.thread_posts = thread_posts or []
 
     def parse_email_file(self) -> email.message.EmailMessage:
         """Parse .eml file"""
@@ -186,6 +187,66 @@ class EmailParser:
 
         return None
 
+    def _extract_thread_participant_emails(self) -> List[str]:
+        """
+        Extract all FROM and TO email addresses from thread posts
+        Returns list of unique email addresses
+        """
+        emails = []
+
+        for post in self.thread_posts:
+            # Extract FROM email
+            from_info = post.get('from', {})
+            if isinstance(from_info, dict):
+                email_info = from_info.get('emailAddress', {})
+                if isinstance(email_info, dict):
+                    email = email_info.get('address', '')
+                    if email:
+                        emails.append(email.lower())
+
+            # Extract TO emails (recipients)
+            recipients = post.get('toRecipients', [])
+            for recipient in recipients:
+                if isinstance(recipient, dict):
+                    email_info = recipient.get('emailAddress', {})
+                    if isinstance(email_info, dict):
+                        email = email_info.get('address', '')
+                        if email:
+                            emails.append(email.lower())
+
+        # Return unique emails
+        return list(set(emails))
+
+    def _find_email_by_name(self, name: str) -> Optional[str]:
+        """
+        Find email address from thread participants that matches the given name
+
+        Args:
+            name: First name extracted from greeting (e.g., "arpita")
+
+        Returns:
+            Full email address if found (e.g., "arpita.singh@birlasoft.com")
+        """
+        if not name or not self.thread_posts:
+            return None
+
+        # Get all participant emails
+        participant_emails = self._extract_thread_participant_emails()
+
+        # Search for email that contains the name
+        name_lower = name.lower()
+        for email in participant_emails:
+            # Skip volibits emails
+            if '@volibits.com' in email or '@volibits' in email:
+                continue
+
+            # Check if name appears in the email username (before @)
+            email_username = email.split('@')[0].lower()
+            if name_lower in email_username:
+                return email
+
+        return None
+
     def extract_client_recruiter(self) -> str:
         """
         Extract client recruiter email from To: field in forwarded email body OR from email greeting
@@ -234,9 +295,15 @@ class EmailParser:
             match = re.search(pattern, body, re.IGNORECASE)
             if match:
                 name = match.group(1).strip()
-                # Convert name to lowercase for consistency (e.g., "Ankita" -> "ankita")
                 # Only use first name
                 first_name = name.split()[0].lower()
+
+                # Try to find full email address from thread participants
+                full_email = self._find_email_by_name(first_name)
+                if full_email:
+                    return full_email
+
+                # Fallback: return just the first name if no matching email found
                 return first_name
 
         return None

@@ -270,8 +270,8 @@ class EmailMonitor:
                 with open(temp_file, 'wb') as f:
                     f.write(msg.as_bytes())
 
-                # Parse to count candidates
-                parser = EmailParser(str(temp_file))
+                # Parse to count candidates (pass posts for participant matching)
+                parser = EmailParser(str(temp_file), thread_posts=posts)
                 parsed_data = parser.parse()
                 num_candidates = len(parsed_data.get('candidates', []))
 
@@ -324,8 +324,8 @@ class EmailMonitor:
             with open(temp_file, 'wb') as f:
                 f.write(msg.as_bytes())
 
-            # Parse email
-            parser = EmailParser(str(temp_file))
+            # Parse email (pass all_posts for participant email matching)
+            parser = EmailParser(str(temp_file), thread_posts=all_posts)
             parsed_data = parser.parse()
             candidates = parsed_data.get('candidates', [])
 
