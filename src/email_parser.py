@@ -232,6 +232,11 @@ class EmailParser:
         # Get all participant info (name and email)
         participants = self._extract_thread_participant_info()
 
+        # DEBUG: Show all participants
+        print(f"\n🔍 DEBUG: Looking for '{name}' in {len(participants)} participant(s):")
+        for p in participants:
+            print(f"   - {p.get('name', 'N/A'):30} | {p.get('email', 'N/A')}")
+
         # Search for participant whose NAME contains the greeting name
         # (Same logic as email_monitor.py _find_recipient_email method)
         name_lower = name.lower()
@@ -248,6 +253,7 @@ class EmailParser:
 
             # Strategy 1: Direct match - check if greeting name is in display name
             if name_lower in participant_name_lower:
+                print(f"   ✅ Direct match: '{name_lower}' in '{participant_name_lower}' → {participant_email}")
                 return participant_email
 
             # Strategy 2: Fuzzy match - handle spelling variations (ankita vs ankitha)
@@ -271,8 +277,12 @@ class EmailParser:
                     similarity = matching_chars / min_len
 
                     if similarity >= 0.8:  # 80% similarity threshold
+                        print(f"   ✅ Fuzzy match: '{name_lower}' ≈ '{word}' ({similarity:.0%} similar) → {participant_email}")
                         return participant_email
+                    else:
+                        print(f"   ⚠️  Close but not enough: '{name_lower}' vs '{word}' ({similarity:.0%} similar, need 80%)")
 
+        print(f"   ❌ No match found for '{name}'\n")
         return None
 
     def extract_client_recruiter(self) -> str:
