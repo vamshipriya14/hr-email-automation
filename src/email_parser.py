@@ -188,8 +188,8 @@ class EmailParser:
 
     def extract_client_recruiter(self) -> str:
         """
-        Extract client recruiter from To: field in forwarded email body OR from email greeting
-        Returns username before @ (e.g., amit.pal from amit.pal@birlasoft.com)
+        Extract client recruiter email from To: field in forwarded email body OR from email greeting
+        Returns full email address (e.g., amit.pal@birlasoft.com)
 
         IMPORTANT: Client recruiter can NEVER be @volibits.com
         Only extract if it's an external client email (NOT volibits domain)
@@ -218,10 +218,9 @@ class EmailParser:
                 if '@volibits.com' in email.lower() or '@volibits' in email.lower():
                     continue
 
-                # Extract username before @ sign
+                # Return full email address
                 if '@' in email:
-                    username = email.split('@')[0].strip()
-                    return username
+                    return email.strip()
 
                 return email
 
