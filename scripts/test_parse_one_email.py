@@ -245,10 +245,6 @@ def main():
                 mime_content = client.get_post_mime(thread_id, post_id)
 
                 # Parse MIME to extract To: header
-                import email
-                from email import policy
-                from io import BytesIO
-
                 msg = email.message_from_string(mime_content, policy=policy.default)
                 to_header = msg.get('To', '')
                 cc_header = msg.get('Cc', '')
@@ -259,7 +255,6 @@ def main():
                 # Extract email from To: header
                 if to_header:
                     # Parse "Name <email@domain.com>" format
-                    import re
                     email_match = re.search(r'<([^>]+)>|([^\s<>]+@[^\s<>]+)', to_header)
                     if email_match:
                         mime_to_header = email_match.group(1) or email_match.group(2)
