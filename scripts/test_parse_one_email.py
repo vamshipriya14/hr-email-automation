@@ -322,6 +322,13 @@ def main():
         parsed_data = parser.parse()
         candidates = parsed_data.get('candidates', [])
 
+        # Enrich candidates with email_from / email_to / client_recruiter
+        for candidate in candidates:
+            candidate['email_from'] = sender
+            if mime_to_header:
+                candidate['email_to'] = mime_to_header
+                candidate['client_recruiter'] = mime_to_header.split('@')[0]
+
         print(f"📊 Parsing Results:")
         print(f"   Company Code: {parsed_data.get('company_code', 'N/A')}")
         print(f"   Company Name: {parsed_data.get('company_name', 'N/A')}")
