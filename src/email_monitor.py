@@ -112,8 +112,27 @@ class EmailMonitor:
                 stats['new'] += 1
                 print(f"         🆕 NEW EMAIL - Processing...")
 
+                # Fetch MIME to extract the real To: header (catches CC'd group emails)
+                mime_to_email = None
+                try:
+                    post_id = best_post.get('id')
+                    if post_id:
+                        mime_content = self.graph_client.get_post_mime(thread_id, post_id)
+                        mime_msg = email.message_from_string(mime_content)
+                        to_header = mime_msg.get('To', '')
+                        # Parse all addresses from To: header
+                        import email.utils
+                        for _, addr in email.utils.getaddresses([to_header]):
+                            if addr and '@volibits.com' not in addr.lower():
+                                mime_to_email = addr
+                                break
+                        if mime_to_email:
+                            print(f"         📧 MIME To: {mime_to_email}")
+                except Exception as e:
+                    print(f"         ⚠️  Could not fetch MIME: {e}")
+
                 # Process the email (pass all posts for email lookup)
-                result = self._process_email(best_post, posts, thread_id, topic, dry_run)
+                result = self._process_email(best_post, posts, thread_id, topic, dry_run, mime_to_email)
 
                 if result['success']:
                     stats['processed'] += 1
@@ -290,7 +309,7 @@ class EmailMonitor:
         return best_post
 
     def _process_email(self, post: Dict, all_posts: List[Dict], thread_id: str, topic: str,
-                      dry_run: bool = False) -> Dict:
+                      dry_run: bool = False, mime_to_email: str = None) -> Dict:
         """
         Process a single email post
 
@@ -341,7 +360,11 @@ class EmailMonitor:
                 # Set email_from (sender's full email address)
                 candidate['email_from'] = sender_full_email
 
-                if recipient_info:
+                # Prefer MIME-extracted To: email (most reliable for CC'd group emails)
+                if mime_to_email:
+                    candidate['email_to'] = mime_to_email
+                    candidate['client_recruiter'] = mime_to_email.split('@')[0]
+                elif recipient_info:
                     # Set email_to (recipient's full email address)
                     if recipient_info.get('email'):
                         candidate['email_to'] = recipient_info['email']

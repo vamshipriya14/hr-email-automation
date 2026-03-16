@@ -341,8 +341,8 @@ class EmailParser:
                 if full_email:
                     return full_email
 
-                # Fallback: return just the first name if no matching email found
-                return first_name
+                # No email found — don't return a bare name
+                return None
 
         return None
 
