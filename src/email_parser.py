@@ -273,8 +273,12 @@ class EmailParser:
             # 2. Check if any part of email starts with the name
             if not is_match:
                 for part in email_parts:
-                    print(f"    🔍 Checking if '{part}'.startswith('{name_lower}') = {part.startswith(name_lower)}")
-                    if part.startswith(name_lower):
+                    # Debug: show repr to see hidden characters
+                    print(f"    🔍 repr(part)={repr(part)}, repr(name_lower)={repr(name_lower)}")
+                    print(f"    🔍 len(part)={len(part)}, len(name_lower)={len(name_lower)}")
+                    result = part.startswith(name_lower)
+                    print(f"    🔍 Checking if '{part}'.startswith('{name_lower}') = {result}")
+                    if result:
                         is_match = True
                         match_method = f"part '{part}' starts with name"
                         print(f"    ✓ Strategy 2: part starts with name")
