@@ -255,12 +255,26 @@ class EmailParser:
                 print(f"    ⏭️  Skipping volibits participant: {participant_name} <{participant_email}>")
                 continue
 
-            # Check if greeting name is contained in participant's display name
-            # e.g., "Ankita" matches "Ankita Sharma" or "Salem Ankitha"
-            if name_lower in participant_name.lower():
+            participant_name_lower = participant_name.lower()
+            print(f"    🔍 Checking: '{name_lower}' in '{participant_name}' (lowered: '{participant_name_lower}')")
+
+            # Strategy 1: Direct match - check if greeting name is in display name
+            if name_lower in participant_name_lower:
                 print(f"  ✅ DEBUG: MATCH FOUND! '{name_lower}' in '{participant_name}'")
                 print(f"  ✅ DEBUG: Returning: {participant_email}")
                 return participant_email
+
+            # Strategy 2: Fuzzy match - handle spelling variations (ankita vs ankitha)
+            # Check each word in the participant name
+            for word in participant_name_lower.split():
+                # Allow 1-2 character difference
+                len_diff = abs(len(word) - len(name_lower))
+                if len_diff <= 2 and len(name_lower) >= 4:
+                    # Check if one is contained in the other
+                    if name_lower in word or word in name_lower:
+                        print(f"  ✅ DEBUG: FUZZY MATCH! '{name_lower}' ≈ '{word}' in '{participant_name}'")
+                        print(f"  ✅ DEBUG: Returning: {participant_email}")
+                        return participant_email
 
         print(f"  ❌ DEBUG: No matching participant found for '{name_lower}'")
         return None
