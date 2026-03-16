@@ -266,12 +266,19 @@ class EmailParser:
 
             # Strategy 2: Fuzzy match - handle spelling variations (ankita vs ankitha)
             # Check each word in the participant name
-            for word in participant_name_lower.split():
+            words = participant_name_lower.split()
+            print(f"    🔍 Fuzzy checking words: {words}")
+            for word in words:
                 # Allow 1-2 character difference
                 len_diff = abs(len(word) - len(name_lower))
+                print(f"    🔍 Word '{word}': len_diff={len_diff}, checking containment...")
                 if len_diff <= 2 and len(name_lower) >= 4:
                     # Check if one is contained in the other
-                    if name_lower in word or word in name_lower:
+                    name_in_word = name_lower in word
+                    word_in_name = word in name_lower
+                    print(f"       '{name_lower}' in '{word}' = {name_in_word}")
+                    print(f"       '{word}' in '{name_lower}' = {word_in_name}")
+                    if name_in_word or word_in_name:
                         print(f"  ✅ DEBUG: FUZZY MATCH! '{name_lower}' ≈ '{word}' in '{participant_name}'")
                         print(f"  ✅ DEBUG: Returning: {participant_email}")
                         return participant_email
