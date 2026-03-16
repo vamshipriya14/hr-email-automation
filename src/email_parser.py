@@ -194,6 +194,8 @@ class EmailParser:
         """
         emails = []
 
+        print(f"  🔍 DEBUG: Extracting emails from {len(self.thread_posts)} thread posts")
+
         for post in self.thread_posts:
             # Extract FROM email
             from_info = post.get('from', {})
@@ -202,20 +204,26 @@ class EmailParser:
                 if isinstance(email_info, dict):
                     email = email_info.get('address', '')
                     if email:
+                        print(f"    📧 Found FROM: {email}")
                         emails.append(email.lower())
 
             # Extract TO emails (recipients)
             recipients = post.get('toRecipients', [])
+            print(f"    📬 Found {len(recipients)} TO recipients")
             for recipient in recipients:
                 if isinstance(recipient, dict):
                     email_info = recipient.get('emailAddress', {})
                     if isinstance(email_info, dict):
                         email = email_info.get('address', '')
                         if email:
+                            print(f"    📧 Found TO: {email}")
                             emails.append(email.lower())
 
         # Return unique emails
-        return list(set(emails))
+        unique_emails = list(set(emails))
+        print(f"  ✅ Total unique emails found: {len(unique_emails)}")
+        print(f"  📋 Emails: {unique_emails}")
+        return unique_emails
 
     def _find_email_by_name(self, name: str) -> Optional[str]:
         """
@@ -227,7 +235,11 @@ class EmailParser:
         Returns:
             Full email address if found (e.g., "arpita.singh@birlasoft.com")
         """
+        print(f"  🔍 DEBUG: Finding email for name: '{name}'")
+        print(f"  🔍 DEBUG: thread_posts available: {len(self.thread_posts) if self.thread_posts else 0}")
+
         if not name or not self.thread_posts:
+            print(f"  ❌ DEBUG: Returning None (name={bool(name)}, thread_posts={bool(self.thread_posts)})")
             return None
 
         # Get all participant emails
@@ -235,16 +247,22 @@ class EmailParser:
 
         # Search for email that contains the name
         name_lower = name.lower()
+        print(f"  🔍 DEBUG: Searching for '{name_lower}' in {len(participant_emails)} emails")
+
         for email in participant_emails:
             # Skip volibits emails
             if '@volibits.com' in email or '@volibits' in email:
+                print(f"    ⏭️  Skipping volibits email: {email}")
                 continue
 
             # Check if name appears in the email username (before @)
             email_username = email.split('@')[0].lower()
+            print(f"    🔍 Checking '{name_lower}' in '{email_username}' (full: {email})")
             if name_lower in email_username:
+                print(f"  ✅ DEBUG: MATCH FOUND! Returning: {email}")
                 return email
 
+        print(f"  ❌ DEBUG: No matching email found for '{name_lower}'")
         return None
 
     def extract_client_recruiter(self) -> str:
@@ -297,13 +315,16 @@ class EmailParser:
                 name = match.group(1).strip()
                 # Only use first name
                 first_name = name.split()[0].lower()
+                print(f"  🔍 DEBUG: Extracted first name from greeting: '{first_name}'")
 
                 # Try to find full email address from thread participants
                 full_email = self._find_email_by_name(first_name)
                 if full_email:
+                    print(f"  ✅ DEBUG: Returning full email: {full_email}")
                     return full_email
 
                 # Fallback: return just the first name if no matching email found
+                print(f"  ⚠️  DEBUG: No email found, returning first name: {first_name}")
                 return first_name
 
         return None
