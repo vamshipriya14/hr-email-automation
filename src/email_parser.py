@@ -257,8 +257,9 @@ class EmailParser:
 
             # Check if name appears in the email username (before @)
             email_username = email.split('@')[0].lower()
-            print(f"    🔍 Checking '{name_lower}' in '{email_username}' (full: {email})")
-            if name_lower in email_username:
+            is_match = name_lower in email_username
+            print(f"    🔍 Checking '{name_lower}' in '{email_username}' → {is_match} (full: {email})")
+            if is_match:
                 print(f"  ✅ DEBUG: MATCH FOUND! Returning: {email}")
                 return email
 
