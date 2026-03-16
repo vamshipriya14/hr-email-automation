@@ -258,8 +258,7 @@ def main():
                 params = {
                     '$filter': f"subject eq '{safe_subject}'",
                     '$select': 'id,toRecipients,subject,sentDateTime',
-                    '$top': 1,
-                    '$orderby': 'sentDateTime desc'
+                    '$top': 1
                 }
                 resp = req.get(url, headers=user_client.get_headers(), params=params, timeout=30)
                 resp.raise_for_status()

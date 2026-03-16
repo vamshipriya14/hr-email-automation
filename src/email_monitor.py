@@ -66,8 +66,7 @@ class EmailMonitor:
             params = {
                 '$filter': f"subject eq '{safe_subject}'",
                 '$select': 'id,toRecipients,subject,sentDateTime',
-                '$top': 1,
-                '$orderby': 'sentDateTime desc'
+                '$top': 1
             }
             response = requests.get(url, headers=client.get_headers(), params=params, timeout=30)
             response.raise_for_status()
