@@ -8,6 +8,7 @@ import os
 import sys
 import time
 import email
+import requests
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List
@@ -16,6 +17,7 @@ from typing import Dict, List
 sys.path.insert(0, str(Path(__file__).parent))
 
 from graph_group_client import GraphGroupClient
+from graph_email_client import GraphEmailClient
 from email_parser import EmailParser
 from database import PostgresClient
 from email_tracker import EmailTracker
@@ -26,6 +28,9 @@ class EmailMonitor:
 
     def __init__(self, tenant_id: str, client_id: str, client_secret: str,
                  group_id: str, db_client: PostgresClient, table_name: str = 'hrvolibit'):
+        self.tenant_id = tenant_id
+        self.client_id = client_id
+        self.client_secret = client_secret
         self.graph_client = GraphGroupClient(
             tenant_id=tenant_id,
             client_id=client_id,
@@ -35,6 +40,46 @@ class EmailMonitor:
         self.db_client = db_client
         self.tracker = EmailTracker()
         self.table_name = table_name
+        self._user_clients: Dict[str, GraphEmailClient] = {}  # cache per sender
+
+    def _get_user_client(self, email_user: str) -> GraphEmailClient:
+        """Get or create a GraphEmailClient for a specific user (cached)."""
+        if email_user not in self._user_clients:
+            self._user_clients[email_user] = GraphEmailClient(
+                tenant_id=self.tenant_id,
+                client_id=self.client_id,
+                client_secret=self.client_secret,
+                email_user=email_user
+            )
+        return self._user_clients[email_user]
+
+    def _get_to_email_from_sender_inbox(self, sender_email: str, subject: str) -> str:
+        """
+        Look up the sent message in the sender's mailbox to get real toRecipients.
+        Uses /users/{sender}/mailFolders/sentitems/messages filtered by subject.
+        Returns first external (non-volibits) recipient email, or None.
+        """
+        try:
+            client = self._get_user_client(sender_email)
+            url = f"{client.graph_api_endpoint}/users/{sender_email}/mailFolders/sentitems/messages"
+            safe_subject = subject.replace("'", "''")
+            params = {
+                '$filter': f"subject eq '{safe_subject}'",
+                '$select': 'id,toRecipients,subject,sentDateTime',
+                '$top': 1,
+                '$orderby': 'sentDateTime desc'
+            }
+            response = requests.get(url, headers=client.get_headers(), params=params, timeout=30)
+            response.raise_for_status()
+            messages = response.json().get('value', [])
+            if messages:
+                for r in messages[0].get('toRecipients', []):
+                    addr = r.get('emailAddress', {}).get('address', '')
+                    if addr and '@volibits.com' not in addr.lower():
+                        return addr
+        except Exception as e:
+            print(f"         ⚠️  Sender inbox lookup failed: {e}")
+        return None
 
     def process_new_emails(self, max_emails: int = 50, dry_run: bool = False, today_only: bool = False) -> Dict:
         """
@@ -112,35 +157,15 @@ class EmailMonitor:
                 stats['new'] += 1
                 print(f"         🆕 NEW EMAIL - Processing...")
 
-                # Fetch real To: email via mailbox messages API (works for CC'd group emails)
+                # Look up real To: email from sender's Sent Items (most reliable)
                 mime_to_email = None
-                try:
-                    to_recipients = []
-
-                    # Strategy 1: use internetMessageId if available on the post
-                    internet_msg_id = best_post.get('internetMessageId')
-                    if internet_msg_id:
-                        to_recipients = self.graph_client.get_to_recipients_by_internet_id(internet_msg_id)
-
-                    # Strategy 2: fallback — match by sender + receivedDateTime
-                    if not to_recipients:
-                        sender_addr = best_post.get('from', {}).get('emailAddress', {}).get('address', '')
-                        received_dt = best_post.get('receivedDateTime', '')
-                        if sender_addr and received_dt:
-                            to_recipients = self.graph_client.get_to_recipients_by_sender_and_date(sender_addr, received_dt)
-
-                    for r in to_recipients:
-                        addr = r.get('emailAddress', {}).get('address', '')
-                        if addr and '@volibits.com' not in addr.lower():
-                            mime_to_email = addr
-                            break
-
+                sender_addr = best_post.get('from', {}).get('emailAddress', {}).get('address', '')
+                if sender_addr and '@volibits.com' in sender_addr.lower():
+                    mime_to_email = self._get_to_email_from_sender_inbox(sender_addr, topic)
                     if mime_to_email:
-                        print(f"         📧 Real To: {mime_to_email}")
+                        print(f"         📧 Real To (from sender inbox): {mime_to_email}")
                     else:
-                        print(f"         ⚠️  No external To: found (post keys: {list(best_post.keys())})")
-                except Exception as e:
-                    print(f"         ⚠️  Could not fetch To: recipients: {e}")
+                        print(f"         ⚠️  No external To: found in sender inbox")
 
                 # Process the email (pass all posts for email lookup)
                 result = self._process_email(best_post, posts, thread_id, topic, dry_run, mime_to_email)
