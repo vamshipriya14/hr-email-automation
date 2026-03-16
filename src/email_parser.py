@@ -231,120 +231,55 @@ class EmailParser:
         if not name or not self.thread_posts:
             return None
 
-        # Get all participant info (name and email)
         participants = self._extract_thread_participant_info()
-
-        # DEBUG: Show all participants
-        print(f"\n🔍 DEBUG: Looking for '{name}' in {len(participants)} participant(s):")
-        for p in participants:
-            print(f"   - {p.get('name', 'N/A'):30} | {p.get('email', 'N/A')}")
-
-        # Search for participant whose NAME contains the greeting name
-        # (Same logic as email_monitor.py _find_recipient_email method)
         name_lower = name.lower()
 
         for participant in participants:
             participant_name = participant.get('name', '')
             participant_email = participant.get('email', '')
 
-            # Skip volibits emails
             if '@volibits.com' in participant_email or '@volibits' in participant_email:
                 continue
 
             participant_name_lower = participant_name.lower()
 
-            # Strategy 1: Direct match - check if greeting name is in display name
+            # Direct match
             if name_lower in participant_name_lower:
-                print(f"   ✅ Direct match: '{name_lower}' in '{participant_name_lower}' → {participant_email}")
                 return participant_email
 
-            # Strategy 2: Fuzzy match - handle spelling variations (ankita vs ankitha)
-            # Check each word in the participant name
-            words = participant_name_lower.split()
-            for word in words:
-                # Skip short words
+            # Fuzzy match for spelling variations (e.g. ankita vs ankitha)
+            for word in participant_name_lower.split():
                 if len(word) < 3:
                     continue
-
-                # Calculate similarity - if names share most characters, consider it a match
-                # e.g., "ankita" (6 chars) vs "ankitha" (7 chars) - difference of 1 char
                 len_diff = abs(len(word) - len(name_lower))
-
                 if len_diff <= 2 and len(name_lower) >= 4:
-                    # Count matching characters in the same positions
                     min_len = min(len(word), len(name_lower))
-                    matching_chars = sum(1 for i in range(min_len) if i < len(word) and i < len(name_lower) and word[i] == name_lower[i])
-
-                    # If 80% or more characters match in position, consider it a match
-                    similarity = matching_chars / min_len
-
-                    if similarity >= 0.8:  # 80% similarity threshold
-                        print(f"   ✅ Fuzzy match: '{name_lower}' ≈ '{word}' ({similarity:.0%} similar) → {participant_email}")
+                    matching_chars = sum(1 for i in range(min_len) if word[i] == name_lower[i])
+                    if matching_chars / min_len >= 0.8:
                         return participant_email
-                    else:
-                        print(f"   ⚠️  Close but not enough: '{name_lower}' vs '{word}' ({similarity:.0%} similar, need 80%)")
 
-        print(f"   ❌ No match found for '{name}'\n")
         return None
 
     def extract_client_recruiter(self) -> str:
         """
-        Extract client recruiter email from To: field in forwarded email body OR from email greeting
-        Returns full email address (e.g., amit.pal@birlasoft.com)
-
-        IMPORTANT: Client recruiter can NEVER be @volibits.com
-        Only extract if it's an external client email (NOT volibits domain)
-
-        Looks for:
-        1. "To: Nisha Gupta <nisha.gupta@birlasoft.com>" (forwarded emails)
-        2. "Hi Ankita," or "Dear Ankita," (Group emails - extract from greeting)
+        Extract client recruiter email from To: field in forwarded email body.
+        Only used for forwarded emails that embed the original To: header in the body.
+        Returns full email address (e.g., amit.pal@birlasoft.com) or None.
         """
-        body = self.get_email_body()
-
-        # Decode HTML entities first (&lt; → <, &gt; → >, &nbsp; → space)
         import html
-        body_decoded = html.unescape(body)
+        body_decoded = html.unescape(self.get_email_body())
 
-        # Try extracting email from To: field (email header, not table data)
-        # Strategy: Find all "To:" occurrences, extract emails, return first non-volibits email in angle brackets
-        # Angle brackets <email> indicate email header format (not table data)
+        # Pattern 1: To: Name <email@domain.com>
+        for m in re.finditer(r'To:[^<]{0,100}<([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})>', body_decoded, re.IGNORECASE):
+            addr = m.group(1).strip()
+            if '@volibits.com' not in addr.lower():
+                return addr
 
-        # Pattern 1: To: Name <email@domain.com> (most reliable - email headers use this format)
-        to_matches = re.finditer(r'To:[^<]{0,100}<([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})>', body_decoded, re.IGNORECASE)
-        for to_match in to_matches:
-            email = to_match.group(1).strip()
-            # Skip volibits emails
-            if '@volibits.com' not in email.lower() and '@volibits' not in email.lower():
-                return email
-
-        # Pattern 2: To: email@domain.com (without angle brackets)
-        to_matches = re.finditer(r'To:\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})', body_decoded, re.IGNORECASE)
-        for to_match in to_matches:
-            email = to_match.group(1).strip()
-            # Skip volibits emails and gmail (likely candidate emails)
-            if '@volibits.com' not in email.lower() and '@gmail.com' not in email.lower():
-                return email
-
-        # If To: not found, try extracting from email greeting (for Group emails)
-        # Look for patterns like "Hi Ankita," or "Dear John," at the start
-        greeting_patterns = [
-            r'(?:Hi|Hello|Dear)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s*[,:]',
-        ]
-
-        for pattern in greeting_patterns:
-            match = re.search(pattern, body, re.IGNORECASE)
-            if match:
-                name = match.group(1).strip()
-                # Only use first name
-                first_name = name.split()[0].lower()
-
-                # Try to find full email address from thread participants
-                full_email = self._find_email_by_name(first_name)
-                if full_email:
-                    return full_email
-
-                # No email found — don't return a bare name
-                return None
+        # Pattern 2: To: email@domain.com
+        for m in re.finditer(r'To:\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})', body_decoded, re.IGNORECASE):
+            addr = m.group(1).strip()
+            if '@volibits.com' not in addr.lower() and '@gmail.com' not in addr.lower():
+                return addr
 
         return None
 

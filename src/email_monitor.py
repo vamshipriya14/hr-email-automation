@@ -233,57 +233,21 @@ class EmailMonitor:
 
         return stats
 
-    def _find_recipient_email(self, body_content: str, all_posts: List[Dict]) -> Dict:
+    def _find_external_participant(self, all_posts: List[Dict]) -> str:
         """
-        Find recipient email (client or internal) by:
-        1. Extracting name from greeting (e.g., "Hi Ankita,")
-        2. Looking up that name in thread posts to find email address
-
-        Returns:
-            Dict with:
-            - 'email': full email address
-            - 'username': username before @ (for client_recruiter)
-            - 'is_external': True if external client, False if internal volibits
-            or None if not found
+        Fallback: find the first external (non-volibits) email address
+        from thread post senders or toRecipients.
+        Used when sender inbox lookup fails.
         """
-        import re
-
-        # Extract name from greeting
-        greeting_patterns = [
-            r'(?:Hi|Hello|Dear)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s*[,:]',
-        ]
-
-        greeting_name = None
-        for pattern in greeting_patterns:
-            match = re.search(pattern, body_content, re.IGNORECASE)
-            if match:
-                greeting_name = match.group(1).strip()
-                break
-
-        if not greeting_name:
-            return None
-
-        # Search all posts for a sender matching this name
+        seen = set()
         for post in all_posts:
-            from_info = post.get('from', {})
-            email_info = from_info.get('emailAddress', {})
-            sender_name = email_info.get('name', '')
-            sender_email = email_info.get('address', '')
-
-            # Check if sender name contains the greeting name
-            # e.g., "Ankita" matches "Ankita Sharma" or just "Ankita"
-            if greeting_name.lower() in sender_name.lower():
-                # Found the recipient!
-                username = sender_email.split('@')[0].strip() if '@' in sender_email else sender_email
-                is_external = '@volibits.com' not in sender_email.lower()
-
-                return {
-                    'email': sender_email,
-                    'username': username,
-                    'is_external': is_external
-                }
-
-        # Not found in thread participants — return None (mime_to_email will handle it)
+            for addr_info in [post.get('from', {})] + post.get('toRecipients', []):
+                email_info = addr_info.get('emailAddress', {})
+                addr = email_info.get('address', '')
+                if addr and addr not in seen:
+                    seen.add(addr)
+                    if '@volibits.com' not in addr.lower():
+                        return addr
         return None
 
     def _find_best_post(self, posts: List[Dict]) -> Dict:
@@ -388,36 +352,24 @@ class EmailMonitor:
             parsed_data = parser.parse()
             candidates = parsed_data.get('candidates', [])
 
-            # Extract recipient email by looking up greeting name in thread posts
-            # Returns dict with 'email' (full), 'username' (before @), 'is_external'
-            recipient_info = self._find_recipient_email(body_content, all_posts)
-
-            # Get sender email (full address) — use volibits recruiter if sender is external
+            # Get sender email — use volibits recruiter if the post sender is external (client reply)
             sender_full_email = volibits_recruiter if volibits_recruiter else from_info.get('emailAddress', {}).get('address', sender)
+
+            # Determine email_to: priority order:
+            # 1. Sender inbox API (most accurate)
+            # 2. Actual sender if this is a client-reply thread
+            # 3. First external participant in the thread (fallback)
+            if not mime_to_email and volibits_recruiter:
+                mime_to_email = sender  # client who replied IS the external contact
+            if not mime_to_email:
+                mime_to_email = self._find_external_participant(all_posts)
 
             # Enrich candidates with email metadata
             for candidate in candidates:
-                # Set email_from (volibits recruiter's email)
                 candidate['email_from'] = sender_full_email
-
-                # For client-reply emails, the actual sender IS the client
-                if volibits_recruiter and not mime_to_email:
-                    candidate['email_to'] = sender
-                    candidate['client_recruiter'] = sender.split('@')[0]
-
-                # Prefer MIME-extracted To: email (most reliable for CC'd group emails)
-                elif mime_to_email:
+                if mime_to_email:
                     candidate['email_to'] = mime_to_email
                     candidate['client_recruiter'] = mime_to_email.split('@')[0]
-                elif recipient_info:
-                    # Set email_to (recipient's full email address)
-                    if recipient_info.get('email'):
-                        candidate['email_to'] = recipient_info['email']
-
-                    # Set client_recruiter ONLY for external emails
-                    if recipient_info.get('is_external') and recipient_info.get('username'):
-                        candidate['client_recruiter'] = recipient_info['username']
-                    # For internal emails, leave client_recruiter blank (no client)
 
             # Normalize client_recruiter to always be username (before @), never full email
             for candidate in candidates:
