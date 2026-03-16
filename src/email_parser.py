@@ -258,6 +258,7 @@ class EmailParser:
 
             # Split email parts by dot (e.g., "salem.ankitha" -> ["salem", "ankitha"])
             email_parts = email_username.split('.')
+            print(f"    🔍 DEBUG: email_parts = {email_parts}")
 
             is_match = False
             match_method = ""
@@ -267,22 +268,24 @@ class EmailParser:
             if name_lower in email_username:
                 is_match = True
                 match_method = "substring"
+                print(f"    ✓ Strategy 1: substring match")
 
             # 2. Check if any part of email starts with the name
             if not is_match:
                 for part in email_parts:
+                    print(f"    🔍 Checking if '{part}'.startswith('{name_lower}') = {part.startswith(name_lower)}")
                     if part.startswith(name_lower):
                         is_match = True
                         match_method = f"part '{part}' starts with name"
+                        print(f"    ✓ Strategy 2: part starts with name")
                         break
 
             # 3. Fuzzy match each part: allow 1-2 character difference
             # e.g., "ankita" matches "ankitha" (difference: 1 char 'h')
             if not is_match:
                 for part in email_parts:
-                    # Check similarity using simple edit distance
-                    # If lengths differ by 1-2 and name is contained or vice versa
                     len_diff = abs(len(part) - len(name_lower))
+                    print(f"    🔍 Fuzzy checking part '{part}' (len_diff={len_diff})")
                     if len_diff <= 2:
                         # Check if shorter string is contained in longer
                         if name_lower in part or part in name_lower:
@@ -290,9 +293,10 @@ class EmailParser:
                             if len(name_lower) >= 4:  # Only for names 4+ chars
                                 is_match = True
                                 match_method = f"fuzzy match '{name_lower}' ≈ '{part}'"
+                                print(f"    ✓ Strategy 3: fuzzy match")
                                 break
 
-            print(f"    🔍 Checking '{name_lower}' in '{email_username}' → {is_match} ({match_method}) (full: {email_addr})")
+            print(f"    🔍 Final result: '{name_lower}' in '{email_username}' → {is_match} ({match_method}) (full: {email_addr})")
             if is_match:
                 print(f"  ✅ DEBUG: MATCH FOUND! Returning: {email_addr}")
                 return email_addr
