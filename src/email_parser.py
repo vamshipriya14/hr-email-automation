@@ -205,21 +205,24 @@ class EmailParser:
         body_decoded = html.unescape(body)
 
         # Try extracting email from To: field (email header, not table data)
-        # Look for "To:" at line start or after HTML tag, followed by email
-        # Pattern: "To:" + optional text + "<email>" or just "email"
-        to_patterns = [
-            r'(?:^|>|\n)\s*To:\s*[^<\n]*<([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})>',  # To: Name <email>
-            r'(?:^|>|\n)\s*To:\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})',  # To: email
-        ]
+        # Strategy: Find all "To:" occurrences, extract emails, return first non-volibits email in angle brackets
+        # Angle brackets <email> indicate email header format (not table data)
 
-        for pattern in to_patterns:
-            to_matches = re.finditer(pattern, body_decoded, re.MULTILINE | re.IGNORECASE)
-            for to_match in to_matches:
-                email = to_match.group(1).strip()
+        # Pattern 1: To: Name <email@domain.com> (most reliable - email headers use this format)
+        to_matches = re.finditer(r'To:[^<]{0,100}<([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})>', body_decoded, re.IGNORECASE)
+        for to_match in to_matches:
+            email = to_match.group(1).strip()
+            # Skip volibits emails
+            if '@volibits.com' not in email.lower() and '@volibits' not in email.lower():
+                return email
 
-                # IMPORTANT: Skip if this is a volibits.com email
-                if '@volibits.com' not in email.lower() and '@volibits' not in email.lower():
-                    return email
+        # Pattern 2: To: email@domain.com (without angle brackets)
+        to_matches = re.finditer(r'To:\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})', body_decoded, re.IGNORECASE)
+        for to_match in to_matches:
+            email = to_match.group(1).strip()
+            # Skip volibits emails and gmail (likely candidate emails)
+            if '@volibits.com' not in email.lower() and '@gmail.com' not in email.lower():
+                return email
 
         # If To: not found, try extracting from email greeting (for Group emails)
         # Look for patterns like "Hi Ankita," or "Dear John," at the start
