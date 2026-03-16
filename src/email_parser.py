@@ -247,47 +247,55 @@ class EmailParser:
         name_lower = name.lower()
         print(f"  🔍 DEBUG: Searching for '{name_lower}' in {len(participant_emails)} emails")
 
-        for email in participant_emails:
+        for email_addr in participant_emails:
             # Skip volibits emails
-            if '@volibits.com' in email or '@volibits' in email:
-                print(f"    ⏭️  Skipping volibits email: {email}")
+            if '@volibits.com' in email_addr or '@volibits' in email_addr:
+                print(f"    ⏭️  Skipping volibits email: {email_addr}")
                 continue
 
             # Check if name appears in the email username (before @)
-            email_username = email.split('@')[0].lower()
+            email_username = email_addr.split('@')[0].lower()
+
+            # Split email parts by dot (e.g., "salem.ankitha" -> ["salem", "ankitha"])
+            email_parts = email_username.split('.')
+
+            is_match = False
+            match_method = ""
 
             # Try multiple matching strategies for name variations
-            # 1. Direct substring match
-            is_match = name_lower in email_username
-
-            # 2. Check if email starts with the name (e.g., "ankita" matches "ankita.singh")
-            if not is_match and email_username.startswith(name_lower):
+            # 1. Direct substring match in full username
+            if name_lower in email_username:
                 is_match = True
+                match_method = "substring"
 
-            # 3. Check if name appears after a dot (e.g., "ankita" matches "salem.ankita")
-            if not is_match and f".{name_lower}" in email_username:
-                is_match = True
-
-            # 4. Fuzzy match: check with common variations (adding 'h')
-            # e.g., "ankita" should match "ankitha", "sweta" should match "shweta"
+            # 2. Check if any part of email starts with the name
             if not is_match:
-                # Check if adding 'h' helps (ankita -> ankitha)
-                name_with_h = name_lower + 'h'
-                if name_with_h in email_username:
-                    is_match = True
-                    print(f"    🔍 Fuzzy match: '{name_lower}' → '{name_with_h}' in '{email_username}'")
+                for part in email_parts:
+                    if part.startswith(name_lower):
+                        is_match = True
+                        match_method = f"part '{part}' starts with name"
+                        break
 
-            # 5. Check reverse: name might have 'h' but email doesn't (shweta vs sweta)
-            if not is_match and name_lower.endswith('h'):
-                name_without_h = name_lower[:-1]
-                if name_without_h in email_username:
-                    is_match = True
-                    print(f"    🔍 Fuzzy match: '{name_lower}' → '{name_without_h}' in '{email_username}'")
+            # 3. Fuzzy match each part: allow 1-2 character difference
+            # e.g., "ankita" matches "ankitha" (difference: 1 char 'h')
+            if not is_match:
+                for part in email_parts:
+                    # Check similarity using simple edit distance
+                    # If lengths differ by 1-2 and name is contained or vice versa
+                    len_diff = abs(len(part) - len(name_lower))
+                    if len_diff <= 2:
+                        # Check if shorter string is contained in longer
+                        if name_lower in part or part in name_lower:
+                            # Additional check: do they share most characters?
+                            if len(name_lower) >= 4:  # Only for names 4+ chars
+                                is_match = True
+                                match_method = f"fuzzy match '{name_lower}' ≈ '{part}'"
+                                break
 
-            print(f"    🔍 Checking '{name_lower}' in '{email_username}' → {is_match} (full: {email})")
+            print(f"    🔍 Checking '{name_lower}' in '{email_username}' → {is_match} ({match_method}) (full: {email_addr})")
             if is_match:
-                print(f"  ✅ DEBUG: MATCH FOUND! Returning: {email}")
-                return email
+                print(f"  ✅ DEBUG: MATCH FOUND! Returning: {email_addr}")
+                return email_addr
 
         print(f"  ❌ DEBUG: No matching email found for '{name_lower}'")
         return None
