@@ -492,17 +492,23 @@ class EmailParser:
         """Map email header to database field"""
         mapping = {
             'SI No': None,  # Skip serial number
+            'S.No': None,  # Skip serial number
             'Gender': None,  # Skip gender
             'Vendor Name': None,  # Skip vendor
             'Qualification': None,  # Skip qualification
+            'Offer If Any': None,  # Skip offer status
+            'Source': None,  # Skip source
+            'SPOC': None,  # Skip SPOC
             'JR No': 'jr_no',
             'JR Number': 'jr_no',
             'JR NO': 'jr_no',
+            'JR': 'jr_no',  # Just "JR" column
             'RH ID': 'jr_no',  # Recruitment/Requisition ID (used by some vendors)
             'Req ID': 'jr_no',  # Requisition ID
             'Job ID': 'jr_no',  # Job ID
             'Date': 'date',
             'Skill': 'general_skill',
+            'Skill Name': 'general_skill',  # Added: "Skill Name" variant
             'General Skill': 'general_skill',
             'Candidate Name': 'name_of_candidate',
             'Name of Candidate': 'name_of_candidate',
@@ -510,9 +516,12 @@ class EmailParser:
             'Contact Number': 'contact_number',
             'Contact': 'contact_number',
             'Phone': 'contact_number',
+            'Mob No': 'contact_number',  # Added: "Mob No" variant
+            'Mobile': 'contact_number',
             'Email ID': 'email_id',
             'Email Id': 'email_id',
             'E-Mail Id': 'email_id',
+            'E-Mail ID': 'email_id',  # Added: capital I and D
             'Email': 'email_id',
             'Current Company': 'current_org',
             'Curr Org': 'current_org',
@@ -524,7 +533,9 @@ class EmailParser:
             'Relevant Exp': 'relevant_experience',
             'Rel Exp': 'relevant_experience',
             'Current CTC': 'current_ctc',
+            'C - CTC': 'current_ctc',  # Added: "C - CTC" variant
             'Expected CTC': 'expected_ctc',
+            'E - CTC': 'expected_ctc',  # Added: "E - CTC" variant
             'Notice Period': 'notice_period',
             'Current Location': 'current_location',
             'Curr Loc': 'current_location',
@@ -603,10 +614,25 @@ class EmailParser:
         if '<table' not in body.lower() and '<tr' not in body.lower():
             return candidates
 
-        # Try to extract table structure using regex
-        # Find all <tr>...</tr> sections
+        # Extract each table separately to avoid mixing signature tables with candidate tables
+        table_pattern = r'<table[^>]*>.*?</table>'
+        tables = re.findall(table_pattern, body, re.DOTALL | re.IGNORECASE)
+
+        # Try parsing each table - return first one that has candidates
+        for table_html in tables:
+            table_candidates = self._parse_single_table(table_html)
+            if table_candidates:
+                return table_candidates
+
+        return candidates
+
+    def _parse_single_table(self, table_html: str) -> List[Dict]:
+        """Parse a single HTML table"""
+        candidates = []
+
+        # Find all <tr>...</tr> sections in THIS table only
         tr_pattern = r'<tr[^>]*>(.*?)</tr>'
-        rows = re.findall(tr_pattern, body, re.DOTALL | re.IGNORECASE)
+        rows = re.findall(tr_pattern, table_html, re.DOTALL | re.IGNORECASE)
 
         if len(rows) < 2:  # Need at least header + 1 data row
             return candidates
@@ -639,6 +665,56 @@ class EmailParser:
         # Determine if first row is actually data (not header)
         # Check if first cell looks like a serial number (1, 2, 3...)
         first_cell = headers[0] if headers else ''
+        first_row_is_data = re.match(r'^\d{1,2}$', first_cell)
+
+        # Parse data rows
+        start_idx = 0 if first_row_is_data else 1
+
+        # If first row is data, we need to infer headers from field positions
+        if first_row_is_data:
+            # Common header sequence for candidate tables
+            headers = ['SI No', 'Date', 'RH ID', 'Skill', 'Name', 'Contact Number', 'E-Mail Id',
+                      'Total Exp', 'Relevant Exp', 'Current CTC', 'Expected CTC', 'Notice Period',
+                      'Current Location', 'Preferred Location', 'Current Company']
+
+        td_pattern = r'<td[^>]*>(.*?)</td>'
+
+        for row in rows[start_idx:]:
+            # Extract all <td> cells from this row
+            cells = re.findall(td_pattern, row, re.DOTALL | re.IGNORECASE)
+
+            if len(cells) < 3:  # Need at least a few fields
+                continue
+
+            # Clean cell values
+            values = []
+            for cell in cells:
+                # Remove HTML tags
+                clean_cell = re.sub(r'<[^>]+>', '', cell).strip()
+                # Remove HTML entities
+                clean_cell = re.sub(r'&nbsp;', ' ', clean_cell)
+                clean_cell = re.sub(r'&[a-z]+;', '', clean_cell)
+                # Remove extra whitespace
+                clean_cell = ' '.join(clean_cell.split())
+                values.append(clean_cell)
+
+            # Map headers to values
+            candidate_data = {}
+            for i, header in enumerate(headers):
+                if i < len(values):
+                    db_field = self._map_header_to_field(header)
+                    if db_field:
+                        candidate_data[db_field] = values[i]
+
+            # Validate and add candidate
+            if self._is_valid_candidate(candidate_data):
+                candidates.append(candidate_data)
+
+            # Safety limit
+            if len(candidates) >= 20:
+                break
+
+        return candidates
         first_row_is_data = re.match(r'^\d{1,2}$', first_cell)
 
         # Parse data rows
@@ -902,12 +978,119 @@ class EmailProcessor:
 
     def _insert_candidate(self, candidate: Dict) -> bool:
         """
-        Insert candidate into database (always inserts, marks duplicates)
+        Insert or update candidate into database
 
         Rules:
-        - Always insert, never skip
-        - Check for duplicates and mark in is_duplicate column
+        - Search for existing record by (jr_no + name) or (jr_no + email)
+        - If found: UPDATE with new non-NULL fields
+        - If not found: INSERT as new record
         - Trim all text fields
+        """
+        # Try to find existing record
+        existing_id = self._find_existing_candidate(candidate)
+
+        if existing_id:
+            # Update existing record
+            return self._update_candidate(existing_id, candidate)
+        else:
+            # Insert new record
+            return self._insert_new_candidate(candidate)
+
+    def _find_existing_candidate(self, candidate: Dict) -> Optional[int]:
+        """
+        Find existing candidate record by matching jr_no + (name or email)
+        Returns the record ID if found, None otherwise
+        """
+        jr_no = candidate.get('jr_no')
+        name = candidate.get('name_of_candidate')
+        email = candidate.get('email_id')
+
+        if not jr_no:
+            return None
+
+        # Try to match by jr_no + email (most reliable)
+        if email:
+            query = """
+                SELECT id FROM hrvolibit
+                WHERE jr_no = %s AND email_id = %s
+                LIMIT 1
+            """
+            results = self.db_client.execute_query(query, (jr_no, email))
+            if results:
+                return results[0][0]
+
+        # Fallback: match by jr_no + name (less reliable due to typos/variations)
+        if name:
+            query = """
+                SELECT id FROM hrvolibit
+                WHERE jr_no = %s AND name_of_candidate = %s
+                LIMIT 1
+            """
+            results = self.db_client.execute_query(query, (jr_no, name))
+            if results:
+                return results[0][0]
+
+        return None
+
+    def _update_candidate(self, record_id: int, candidate: Dict) -> bool:
+        """
+        Update existing candidate record with new non-NULL fields
+        Only updates fields that are currently NULL in the database
+        """
+        # Prepare update query - only update NULL fields with new values
+        update_fields = []
+        values = []
+
+        allowed_fields = {
+            'name_of_candidate', 'email_id', 'contact_number', 'jr_no', 'date',
+            'general_skill', 'company_name', 'client_recruiter', 'recruiter',
+            'total_experience', 'relevant_experience', 'current_ctc', 'expected_ctc',
+            'notice_period', 'current_location', 'preferred_location', 'current_org',
+            'status', 'final_status', 'remarks', 'delivery_type',
+            'email_from', 'email_to', 'attachment', 'record_status'
+        }
+
+        # Process date field
+        if 'date' in candidate and candidate['date']:
+            candidate['date'] = self._normalize_date(candidate['date'])
+
+        # Build UPDATE SET clause - only for non-null new values
+        for field, value in candidate.items():
+            if field in allowed_fields and value:
+                trimmed_value = value.strip() if isinstance(value, str) else value
+                if trimmed_value:
+                    # Update field if current value is NULL
+                    update_fields.append(f"{field} = COALESCE({field}, %s)")
+                    values.append(trimmed_value)
+
+        if not update_fields:
+            return True  # Nothing to update
+
+        # Add modified audit fields
+        modified_by_value = candidate.get('recruiter', 'email_parser')
+        update_fields.append("modified_by = %s")
+        update_fields.append("modified_date = %s")
+        values.extend([modified_by_value, datetime.now()])
+
+        # Add WHERE clause
+        values.append(record_id)
+
+        query = f"""
+            UPDATE hrvolibit
+            SET {', '.join(update_fields)}
+            WHERE id = %s
+        """
+
+        try:
+            affected = self.db_client.execute_update(query, tuple(values))
+            return affected > 0
+        except Exception as e:
+            print(f"    Error updating: {e}")
+            return False
+
+    def _insert_new_candidate(self, candidate: Dict) -> bool:
+        """
+        Insert new candidate record
         """
         # Check for duplicate type BEFORE insertion
         duplicate_type = self._check_duplicate_type(candidate)
@@ -958,6 +1141,7 @@ class EmailProcessor:
         values.extend([modified_by_value, datetime.now()])
         placeholders.extend(['%s', '%s'])
 
+        # Simple INSERT for new records
         query = f"""
             INSERT INTO hrvolibit ({', '.join(fields)})
             VALUES ({', '.join(placeholders)})
