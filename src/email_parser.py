@@ -200,28 +200,18 @@ class EmailParser:
         """
         body = self.get_email_body()
 
-        # Try extracting from To: field first (for forwarded emails)
-        patterns = [
-            r'To:\s*([^<]+)\s*<([^>]+)>',
-            r'To:\s*([^\n]+@[^\n]+)',
-        ]
+        # Decode HTML entities first (&lt; → <, &gt; → >, &nbsp; → space)
+        import html
+        body_decoded = html.unescape(body)
 
-        for pattern in patterns:
-            match = re.search(pattern, body)
-            if match:
-                if len(match.groups()) == 2:
-                    email = match.group(2).strip()  # Email address
-                else:
-                    email = match.group(1).strip()
+        # Try extracting email from To: field
+        # Find ALL "To:" fields and return first non-volibits email
+        to_matches = re.finditer(r'To:.*?([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})', body_decoded, re.IGNORECASE)
+        for to_match in to_matches:
+            email = to_match.group(1).strip()
 
-                # IMPORTANT: Skip if this is a volibits.com email
-                if '@volibits.com' in email.lower() or '@volibits' in email.lower():
-                    continue
-
-                # Return full email address
-                if '@' in email:
-                    return email.strip()
-
+            # IMPORTANT: Skip if this is a volibits.com email
+            if '@volibits.com' not in email.lower() and '@volibits' not in email.lower():
                 return email
 
         # If To: not found, try extracting from email greeting (for Group emails)
