@@ -267,19 +267,26 @@ class EmailParser:
             # Strategy 2: Fuzzy match - handle spelling variations (ankita vs ankitha)
             # Check each word in the participant name
             words = participant_name_lower.split()
-            print(f"    🔍 Fuzzy checking words: {words}")
             for word in words:
-                # Allow 1-2 character difference
+                # Skip short words
+                if len(word) < 3:
+                    continue
+
+                # Calculate similarity - if names share most characters, consider it a match
+                # e.g., "ankita" (6 chars) vs "ankitha" (7 chars) - difference of 1 char
                 len_diff = abs(len(word) - len(name_lower))
-                print(f"    🔍 Word '{word}': len_diff={len_diff}, checking containment...")
+
                 if len_diff <= 2 and len(name_lower) >= 4:
-                    # Check if one is contained in the other
-                    name_in_word = name_lower in word
-                    word_in_name = word in name_lower
-                    print(f"       '{name_lower}' in '{word}' = {name_in_word}")
-                    print(f"       '{word}' in '{name_lower}' = {word_in_name}")
-                    if name_in_word or word_in_name:
-                        print(f"  ✅ DEBUG: FUZZY MATCH! '{name_lower}' ≈ '{word}' in '{participant_name}'")
+                    # Count matching characters in the same positions
+                    min_len = min(len(word), len(name_lower))
+                    matching_chars = sum(1 for i in range(min_len) if i < len(word) and i < len(name_lower) and word[i] == name_lower[i])
+
+                    # If 80% or more characters match in position, consider it a match
+                    similarity = matching_chars / min_len
+                    print(f"    🔍 Comparing '{name_lower}' vs '{word}': {matching_chars}/{min_len} chars match ({similarity:.0%})")
+
+                    if similarity >= 0.8:  # 80% similarity threshold
+                        print(f"  ✅ DEBUG: FUZZY MATCH! '{name_lower}' ≈ '{word}' ({similarity:.0%} similar)")
                         print(f"  ✅ DEBUG: Returning: {participant_email}")
                         return participant_email
 
