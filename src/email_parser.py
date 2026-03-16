@@ -255,7 +255,35 @@ class EmailParser:
 
             # Check if name appears in the email username (before @)
             email_username = email.split('@')[0].lower()
+
+            # Try multiple matching strategies for name variations
+            # 1. Direct substring match
             is_match = name_lower in email_username
+
+            # 2. Check if email starts with the name (e.g., "ankita" matches "ankita.singh")
+            if not is_match and email_username.startswith(name_lower):
+                is_match = True
+
+            # 3. Check if name appears after a dot (e.g., "ankita" matches "salem.ankita")
+            if not is_match and f".{name_lower}" in email_username:
+                is_match = True
+
+            # 4. Fuzzy match: check with common variations (adding 'h')
+            # e.g., "ankita" should match "ankitha", "sweta" should match "shweta"
+            if not is_match:
+                # Check if adding 'h' helps (ankita -> ankitha)
+                name_with_h = name_lower + 'h'
+                if name_with_h in email_username:
+                    is_match = True
+                    print(f"    🔍 Fuzzy match: '{name_lower}' → '{name_with_h}' in '{email_username}'")
+
+            # 5. Check reverse: name might have 'h' but email doesn't (shweta vs sweta)
+            if not is_match and name_lower.endswith('h'):
+                name_without_h = name_lower[:-1]
+                if name_without_h in email_username:
+                    is_match = True
+                    print(f"    🔍 Fuzzy match: '{name_lower}' → '{name_without_h}' in '{email_username}'")
+
             print(f"    🔍 Checking '{name_lower}' in '{email_username}' → {is_match} (full: {email})")
             if is_match:
                 print(f"  ✅ DEBUG: MATCH FOUND! Returning: {email}")

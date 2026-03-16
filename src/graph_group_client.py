@@ -173,6 +173,27 @@ class GraphGroupClient:
             logger.error(f"Failed to get thread posts: {e}")
             raise
 
+    def get_post_mime(self, thread_id: str, post_id: str) -> str:
+        """
+        Get post content in MIME format
+
+        Args:
+            thread_id: Thread ID
+            post_id: Post ID
+
+        Returns:
+            MIME content as string
+        """
+        url = f"{self.graph_api_endpoint}/groups/{self.group_id}/threads/{thread_id}/posts/{post_id}/$value"
+
+        try:
+            response = requests.get(url, headers=self.get_headers(), timeout=30)
+            response.raise_for_status()
+            return response.text
+        except Exception as e:
+            logger.error(f"Failed to get MIME post: {e}")
+            raise
+
     def list_messages(self, folder: str = 'inbox', max_results: int = 50) -> List[Dict[str, Any]]:
         """
         List messages in group mailbox folder (if available)
