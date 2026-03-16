@@ -357,6 +357,15 @@ class EmailMonitor:
             from_info = post.get('from', {})
             sender = from_info.get('emailAddress', {}).get('address', 'Unknown')
 
+            # If sender is external (client reply), find the volibits recruiter from thread
+            volibits_recruiter = None
+            if '@volibits.com' not in sender.lower():
+                for p in all_posts:
+                    p_addr = p.get('from', {}).get('emailAddress', {}).get('address', '')
+                    if '@volibits.com' in p_addr.lower():
+                        volibits_recruiter = p_addr
+                        break
+
             body_info = post.get('body', {})
             body_content = body_info.get('content', '')
             body_type = body_info.get('contentType', 'text')
@@ -364,7 +373,8 @@ class EmailMonitor:
             # Create temporary email message for parser
             msg = email.message.EmailMessage()
             msg['Subject'] = topic
-            msg['From'] = sender
+            # Use volibits recruiter as From if sender is external, so parser sets recruiter correctly
+            msg['From'] = volibits_recruiter if volibits_recruiter else sender
             msg['To'] = 'rec_team@volibits.com'
             msg.set_content(body_content, subtype='html' if body_type == 'html' else 'plain')
 
@@ -382,16 +392,21 @@ class EmailMonitor:
             # Returns dict with 'email' (full), 'username' (before @), 'is_external'
             recipient_info = self._find_recipient_email(body_content, all_posts)
 
-            # Get sender email (full address)
-            sender_full_email = from_info.get('emailAddress', {}).get('address', sender)
+            # Get sender email (full address) — use volibits recruiter if sender is external
+            sender_full_email = volibits_recruiter if volibits_recruiter else from_info.get('emailAddress', {}).get('address', sender)
 
             # Enrich candidates with email metadata
             for candidate in candidates:
-                # Set email_from (sender's full email address)
+                # Set email_from (volibits recruiter's email)
                 candidate['email_from'] = sender_full_email
 
+                # For client-reply emails, the actual sender IS the client
+                if volibits_recruiter and not mime_to_email:
+                    candidate['email_to'] = sender
+                    candidate['client_recruiter'] = sender.split('@')[0]
+
                 # Prefer MIME-extracted To: email (most reliable for CC'd group emails)
-                if mime_to_email:
+                elif mime_to_email:
                     candidate['email_to'] = mime_to_email
                     candidate['client_recruiter'] = mime_to_email.split('@')[0]
                 elif recipient_info:
@@ -403,6 +418,12 @@ class EmailMonitor:
                     if recipient_info.get('is_external') and recipient_info.get('username'):
                         candidate['client_recruiter'] = recipient_info['username']
                     # For internal emails, leave client_recruiter blank (no client)
+
+            # Normalize client_recruiter to always be username (before @), never full email
+            for candidate in candidates:
+                cr = candidate.get('client_recruiter', '')
+                if cr and '@' in cr:
+                    candidate['client_recruiter'] = cr.split('@')[0]
 
             # Debug: Show enriched fields for first candidate
             if candidates and dry_run:

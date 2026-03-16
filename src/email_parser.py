@@ -68,10 +68,12 @@ class EmailParser:
         # First try to get from outer subject (if it happens to have the info)
         subject = self.raw_email.get('Subject', '')
 
-        # Remove "[EXTERNAL]:", "Fw:" or "Fwd:" prefix
+        # Remove common subject prefixes
         subject = re.sub(r'^\[EXTERNAL\]:\s*', '', subject, flags=re.IGNORECASE)
+        subject = re.sub(r'^\[EXT\]\s*', '', subject, flags=re.IGNORECASE)
         subject = re.sub(r'^(Fw|Fwd):\s*', '', subject, flags=re.IGNORECASE)
         subject = re.sub(r'^Re:\s*', '', subject, flags=re.IGNORECASE)
+        subject = re.sub(r'^Reminder\s*\d*:\s*', '', subject, flags=re.IGNORECASE)
 
         # Try to extract from outer subject first
         match = re.match(r'([A-Z]{2,3}):\s*(.+?)(?:_\d+)?$', subject.strip())
