@@ -112,24 +112,35 @@ class EmailMonitor:
                 stats['new'] += 1
                 print(f"         🆕 NEW EMAIL - Processing...")
 
-                # Fetch MIME to extract the real To: header (catches CC'd group emails)
+                # Fetch real To: email via mailbox messages API (works for CC'd group emails)
                 mime_to_email = None
                 try:
-                    post_id = best_post.get('id')
-                    if post_id:
-                        mime_content = self.graph_client.get_post_mime(thread_id, post_id)
-                        mime_msg = email.message_from_string(mime_content)
-                        to_header = mime_msg.get('To', '')
-                        # Parse all addresses from To: header
-                        import email.utils
-                        for _, addr in email.utils.getaddresses([to_header]):
-                            if addr and '@volibits.com' not in addr.lower():
-                                mime_to_email = addr
-                                break
-                        if mime_to_email:
-                            print(f"         📧 MIME To: {mime_to_email}")
+                    to_recipients = []
+
+                    # Strategy 1: use internetMessageId if available on the post
+                    internet_msg_id = best_post.get('internetMessageId')
+                    if internet_msg_id:
+                        to_recipients = self.graph_client.get_to_recipients_by_internet_id(internet_msg_id)
+
+                    # Strategy 2: fallback — match by sender + receivedDateTime
+                    if not to_recipients:
+                        sender_addr = best_post.get('from', {}).get('emailAddress', {}).get('address', '')
+                        received_dt = best_post.get('receivedDateTime', '')
+                        if sender_addr and received_dt:
+                            to_recipients = self.graph_client.get_to_recipients_by_sender_and_date(sender_addr, received_dt)
+
+                    for r in to_recipients:
+                        addr = r.get('emailAddress', {}).get('address', '')
+                        if addr and '@volibits.com' not in addr.lower():
+                            mime_to_email = addr
+                            break
+
+                    if mime_to_email:
+                        print(f"         📧 Real To: {mime_to_email}")
+                    else:
+                        print(f"         ⚠️  No external To: found (post keys: {list(best_post.keys())})")
                 except Exception as e:
-                    print(f"         ⚠️  Could not fetch MIME: {e}")
+                    print(f"         ⚠️  Could not fetch To: recipients: {e}")
 
                 # Process the email (pass all posts for email lookup)
                 result = self._process_email(best_post, posts, thread_id, topic, dry_run, mime_to_email)
@@ -248,13 +259,8 @@ class EmailMonitor:
                     'is_external': is_external
                 }
 
-        # If not found in posts, assume external and return just the first name
-        first_name = greeting_name.split()[0].lower()
-        return {
-            'email': None,
-            'username': first_name,
-            'is_external': True  # Assume external if not found
-        }
+        # Not found in thread participants — return None (mime_to_email will handle it)
+        return None
 
     def _find_best_post(self, posts: List[Dict]) -> Dict:
         """

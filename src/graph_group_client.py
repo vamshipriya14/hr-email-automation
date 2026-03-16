@@ -246,6 +246,56 @@ class GraphGroupClient:
             logger.error(f"Failed to list unread messages: {e}")
             raise
 
+    def get_to_recipients_by_internet_id(self, internet_message_id: str) -> List[Dict[str, Any]]:
+        """
+        Find toRecipients for an email using its internetMessageId.
+        Uses the group mailbox messages endpoint which properly returns toRecipients.
+        Re
+        quires Mail.Read permission (already granted).
+        """
+        url = f"{self.graph_api_endpoint}/groups/{self.group_id}/messages"
+        # internetMessageId contains angle brackets like <xxx@xxx> — escape for OData filter
+        safe_id = internet_message_id.replace("'", "''")
+        params = {
+            '$filter': f"internetMessageId eq '{safe_id}'",
+            '$select': 'id,toRecipients,ccRecipients',
+            '$top': 1
+        }
+        try:
+            response = requests.get(url, headers=self.get_headers(), params=params, timeout=30)
+            response.raise_for_status()
+            messages = response.json().get('value', [])
+            if messages:
+                return messages[0].get('toRecipients', [])
+            return []
+        except Exception as e:
+            logger.error(f"Failed to get toRecipients by internetMessageId: {e}")
+            return []
+
+    def get_to_recipients_by_sender_and_date(self, sender_email: str, received_datetime: str) -> List[Dict[str, Any]]:
+        """
+        Fallback: find toRecipients by matching sender email + receivedDateTime.
+        Used when internetMessageId is not available on conversation posts.
+        received_datetime: ISO 8601 string like '2026-03-16T13:26:27Z'
+        """
+        url = f"{self.graph_api_endpoint}/groups/{self.group_id}/messages"
+        safe_sender = sender_email.replace("'", "''")
+        params = {
+            '$filter': f"from/emailAddress/address eq '{safe_sender}' and receivedDateTime eq {received_datetime}",
+            '$select': 'id,toRecipients,receivedDateTime',
+            '$top': 1
+        }
+        try:
+            response = requests.get(url, headers=self.get_headers(), params=params, timeout=30)
+            response.raise_for_status()
+            messages = response.json().get('value', [])
+            if messages:
+                return messages[0].get('toRecipients', [])
+            return []
+        except Exception as e:
+            logger.error(f"Failed to get toRecipients by sender/date: {e}")
+            return []
+
     def get_message_content(self, message_id: str) -> Dict[str, Any]:
         """Get full message content"""
         url = f"{self.graph_api_endpoint}/groups/{self.group_id}/messages/{message_id}"
