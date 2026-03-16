@@ -185,53 +185,51 @@ class EmailParser:
 
         return None
 
-    def _extract_thread_participant_emails(self) -> List[str]:
+    def _extract_thread_participant_info(self) -> List[Dict]:
         """
-        Extract all FROM and TO email addresses from thread posts
-        Returns list of unique email addresses
+        Extract participant info (name and email) from thread posts
+        Returns list of dicts with 'name' and 'email' keys
         """
-        emails = []
+        participants = []
 
-        print(f"  🔍 DEBUG: Extracting emails from {len(self.thread_posts)} thread posts")
+        print(f"  🔍 DEBUG: Extracting participants from {len(self.thread_posts)} thread posts")
 
         for post in self.thread_posts:
-            # Extract FROM email
+            # Extract FROM participant
             from_info = post.get('from', {})
             if isinstance(from_info, dict):
                 email_info = from_info.get('emailAddress', {})
                 if isinstance(email_info, dict):
-                    email = email_info.get('address', '')
-                    if email:
-                        print(f"    📧 Found FROM: {email}")
-                        emails.append(email.lower())
+                    name = email_info.get('name', '')
+                    email_addr = email_info.get('address', '')
+                    if email_addr:
+                        print(f"    📧 Found FROM: {name} <{email_addr}>")
+                        participants.append({'name': name, 'email': email_addr})
 
-            # Extract TO emails (recipients)
+            # Extract TO recipients
             recipients = post.get('toRecipients', [])
-            print(f"    📬 Found {len(recipients)} TO recipients")
             for recipient in recipients:
                 if isinstance(recipient, dict):
                     email_info = recipient.get('emailAddress', {})
                     if isinstance(email_info, dict):
-                        email = email_info.get('address', '')
-                        if email:
-                            print(f"    📧 Found TO: {email}")
-                            emails.append(email.lower())
+                        name = email_info.get('name', '')
+                        email_addr = email_info.get('address', '')
+                        if email_addr:
+                            print(f"    📧 Found TO: {name} <{email_addr}>")
+                            participants.append({'name': name, 'email': email_addr})
 
-        # Return unique emails
-        unique_emails = list(set(emails))
-        print(f"  ✅ Total unique emails found: {len(unique_emails)}")
-        print(f"  📋 Emails: {unique_emails}")
-        return unique_emails
+        print(f"  ✅ Total participants found: {len(participants)}")
+        return participants
 
     def _find_email_by_name(self, name: str) -> Optional[str]:
         """
         Find email address from thread participants that matches the given name
 
         Args:
-            name: First name extracted from greeting (e.g., "arpita")
+            name: First name extracted from greeting (e.g., "Ankita")
 
         Returns:
-            Full email address if found (e.g., "arpita.singh@birlasoft.com")
+            Full email address if found (e.g., "ankita.sharma@birlasoft.com")
         """
         print(f"  🔍 DEBUG: Finding email for name: '{name}'")
         print(f"  🔍 DEBUG: thread_posts available: {len(self.thread_posts) if self.thread_posts else 0}")
@@ -240,72 +238,31 @@ class EmailParser:
             print(f"  ❌ DEBUG: Returning None (name={bool(name)}, thread_posts={bool(self.thread_posts)})")
             return None
 
-        # Get all participant emails
-        participant_emails = self._extract_thread_participant_emails()
+        # Get all participant info (name and email)
+        participants = self._extract_thread_participant_info()
 
-        # Search for email that contains the name
+        # Search for participant whose NAME contains the greeting name
+        # (Same logic as email_monitor.py _find_recipient_email method)
         name_lower = name.lower()
-        print(f"  🔍 DEBUG: Searching for '{name_lower}' in {len(participant_emails)} emails")
+        print(f"  🔍 DEBUG: Searching for '{name_lower}' in {len(participants)} participants")
 
-        for email_addr in participant_emails:
+        for participant in participants:
+            participant_name = participant.get('name', '')
+            participant_email = participant.get('email', '')
+
             # Skip volibits emails
-            if '@volibits.com' in email_addr or '@volibits' in email_addr:
-                print(f"    ⏭️  Skipping volibits email: {email_addr}")
+            if '@volibits.com' in participant_email or '@volibits' in participant_email:
+                print(f"    ⏭️  Skipping volibits participant: {participant_name} <{participant_email}>")
                 continue
 
-            # Check if name appears in the email username (before @)
-            email_username = email_addr.split('@')[0].lower()
+            # Check if greeting name is contained in participant's display name
+            # e.g., "Ankita" matches "Ankita Sharma" or "Salem Ankitha"
+            if name_lower in participant_name.lower():
+                print(f"  ✅ DEBUG: MATCH FOUND! '{name_lower}' in '{participant_name}'")
+                print(f"  ✅ DEBUG: Returning: {participant_email}")
+                return participant_email
 
-            # Split email parts by dot (e.g., "salem.ankitha" -> ["salem", "ankitha"])
-            email_parts = email_username.split('.')
-            print(f"    🔍 DEBUG: email_parts = {email_parts}")
-
-            is_match = False
-            match_method = ""
-
-            # Try multiple matching strategies for name variations
-            # 1. Direct substring match in full username
-            if name_lower in email_username:
-                is_match = True
-                match_method = "substring"
-                print(f"    ✓ Strategy 1: substring match")
-
-            # 2. Check if any part of email starts with the name
-            if not is_match:
-                for part in email_parts:
-                    # Debug: show repr to see hidden characters
-                    print(f"    🔍 repr(part)={repr(part)}, repr(name_lower)={repr(name_lower)}")
-                    print(f"    🔍 len(part)={len(part)}, len(name_lower)={len(name_lower)}")
-                    result = part.startswith(name_lower)
-                    print(f"    🔍 Checking if '{part}'.startswith('{name_lower}') = {result}")
-                    if result:
-                        is_match = True
-                        match_method = f"part '{part}' starts with name"
-                        print(f"    ✓ Strategy 2: part starts with name")
-                        break
-
-            # 3. Fuzzy match each part: allow 1-2 character difference
-            # e.g., "ankita" matches "ankitha" (difference: 1 char 'h')
-            if not is_match:
-                for part in email_parts:
-                    len_diff = abs(len(part) - len(name_lower))
-                    print(f"    🔍 Fuzzy checking part '{part}' (len_diff={len_diff})")
-                    if len_diff <= 2:
-                        # Check if shorter string is contained in longer
-                        if name_lower in part or part in name_lower:
-                            # Additional check: do they share most characters?
-                            if len(name_lower) >= 4:  # Only for names 4+ chars
-                                is_match = True
-                                match_method = f"fuzzy match '{name_lower}' ≈ '{part}'"
-                                print(f"    ✓ Strategy 3: fuzzy match")
-                                break
-
-            print(f"    🔍 Final result: '{name_lower}' in '{email_username}' → {is_match} ({match_method}) (full: {email_addr})")
-            if is_match:
-                print(f"  ✅ DEBUG: MATCH FOUND! Returning: {email_addr}")
-                return email_addr
-
-        print(f"  ❌ DEBUG: No matching email found for '{name_lower}'")
+        print(f"  ❌ DEBUG: No matching participant found for '{name_lower}'")
         return None
 
     def extract_client_recruiter(self) -> str:
