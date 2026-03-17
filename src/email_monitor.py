@@ -16,7 +16,6 @@ from typing import Dict, List
 # Add current directory to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from graph_group_client import GraphGroupClient
 from graph_email_client import GraphEmailClient
 from email_parser import EmailParser
 from database import PostgresClient
@@ -27,15 +26,15 @@ class EmailMonitor:
     """Automated email monitoring and processing"""
 
     def __init__(self, tenant_id: str, client_id: str, client_secret: str,
-                 group_id: str, db_client: PostgresClient, table_name: str = 'hrvolibit'):
+                 email_user: str, db_client: PostgresClient, table_name: str = 'hrvolibit'):
         self.tenant_id = tenant_id
         self.client_id = client_id
         self.client_secret = client_secret
-        self.graph_client = GraphGroupClient(
+        self.graph_client = GraphEmailClient(
             tenant_id=tenant_id,
             client_id=client_id,
             client_secret=client_secret,
-            group_id=group_id
+            email_user=email_user
         )
         self.db_client = db_client
         self.tracker = EmailTracker()
@@ -80,7 +79,33 @@ class EmailMonitor:
             print(f"         ⚠️  Sender inbox lookup failed: {e}")
         return None
 
-    def process_new_emails(self, max_emails: int = 50, dry_run: bool = False, today_only: bool = False) -> Dict:
+    def _should_skip_email(self, subject: str) -> tuple[bool, str]:
+        """
+        Check if email should be skipped based on subject patterns
+
+        Returns:
+            (should_skip: bool, reason: str)
+        """
+        if not subject:
+            return False, ""
+        
+        subject_lower = subject.lower().strip()
+        
+        # Ignore emails with "Reminder" in subject
+        if "reminder" in subject_lower:
+            return True, "Contains 'Reminder' in subject"
+        
+        # Ignore all forwarded emails (FW: or Fw:)
+        if subject_lower.startswith("fw:"):
+            return True, "Forwarded email (FW:)"
+        
+        # Ignore all replied emails (RE: or Re:)
+        if subject_lower.startswith("re:"):
+            return True, "Replied email (RE:)"
+        
+        return False, ""
+
+    def process_new_emails(self, max_emails: int = 50, dry_run: bool = False, today_only: bool = False, all_emails: bool = False) -> Dict:
         """
         Process new emails from the group
 
@@ -108,47 +133,109 @@ class EmailMonitor:
         print("=" * 80)
         print()
 
-        # Get recent threads
+        # Get recent messages
         try:
-            print(f"📬 Fetching up to {max_emails} recent threads" + (" from today..." if today_only else "..."))
-            threads = self.graph_client.list_threads(max_results=max_emails, today_only=today_only)
-            print(f"   ✅ Found {len(threads)} threads")
+            if all_emails:
+                print(f"📬 Fetching up to {max_emails} messages (read and unread)...")
+                messages = self.graph_client.list_all_messages(max_results=max_emails)
+            else:
+                print(f"📬 Fetching up to {max_emails} unread messages...")
+                messages = self.graph_client.list_unread_messages(max_results=max_emails)
+            # Filter for today if requested
+            if today_only:
+                from datetime import timezone, timedelta
+                today = datetime.now(timezone.utc).date()
+                messages = [m for m in messages if datetime.fromisoformat(m.get('receivedDateTime', '').replace('Z', '+00:00')).date() == today]
+            print(f"   ✅ Found {len(messages)} unread message(s)")
             print()
         except Exception as e:
-            print(f"   ❌ Failed to fetch threads: {e}")
+            print(f"   ❌ Failed to fetch messages: {e}")
             stats['errors'] += 1
             return stats
 
-        # Process each thread
-        for i, thread in enumerate(threads, 1):
-            thread_id = thread.get('id')
-            topic = thread.get('topic', 'No subject')
-            last_delivered = thread.get('lastDeliveredDateTime', 'Unknown')
+        # Process each message
+        for i, message in enumerate(messages, 1):
+            message_id = message.get('id')
+            topic = message.get('subject', 'No subject')
+            received_date = message.get('receivedDateTime', 'Unknown')
 
             stats['checked'] += 1
 
-            print(f"[{i}/{len(threads)}] {topic}")
-            print(f"         Thread ID: {thread_id[:40]}...")
-            print(f"         Last delivered: {last_delivered}")
+            print(f"[{i}/{len(messages)}] {topic}")
+            print(f"         Message ID: {message_id[:40]}...")
+            print(f"         Received: {received_date}")
 
-            # Get posts to find the internetMessageId
+            # Check if email should be skipped
+            should_skip, skip_reason = self._should_skip_email(topic)
+            if should_skip:
+                print(f"         ⊘ Skipped: {skip_reason}")
+                print()
+                continue
+
+            # Get full message content
             try:
-                posts = self.graph_client.get_thread_posts(thread_id)
-                if not posts:
-                    print(f"         ⚠️  No posts found, skipping")
-                    print()
-                    continue
-
-                # Find the post with candidate data (search all posts)
-                best_post = self._find_best_post(posts)
-                if not best_post:
-                    print(f"         ⚠️  No post with table found, skipping")
-                    print()
-                    continue
-
-                # Use thread_id as the unique identifier for tracking
-                # Each thread represents a unique email conversation
-                if self.tracker.is_processed(thread_id):
+                # Try standard API first, fallback to MIME
+                try:
+                    full_message = self.graph_client.get_message_content(message_id)
+                    posts = [full_message]
+                except Exception as mime_fallback_e:
+                    # Standard API failed, use MIME format (expected for some messages)
+                    from email import policy, message_from_string
+                    mime_content = self.graph_client.get_message_mime(message_id)
+                    msg_obj = message_from_string(mime_content, policy=policy.default)
+                    
+                    # Extract text content from multipart messages
+                    body_content = ""
+                    content_type_found = 'plain'
+                    
+                    if msg_obj.is_multipart():
+                        for part in msg_obj.iter_parts():
+                            if part.get_content_maintype() == 'text':
+                                try:
+                                    content_type = part.get_content_type()
+                                    part_content = part.get_content()
+                                    if content_type == 'text/html':
+                                        body_content = part_content
+                                        content_type_found = 'html'
+                                        break
+                                    elif content_type == 'text/plain' and not body_content:
+                                        body_content = part_content
+                                        content_type_found = 'plain'
+                                except:
+                                    pass
+                    else:
+                        try:
+                            body_content = msg_obj.get_content()
+                            content_type = msg_obj.get_content_type()
+                            if 'html' in content_type:
+                                content_type_found = 'html'
+                        except:
+                            try:
+                                payload = msg_obj.get_payload(decode=True)
+                                if isinstance(payload, bytes):
+                                    body_content = payload.decode('utf-8', errors='ignore')
+                                else:
+                                    body_content = str(payload)
+                            except:
+                                body_content = str(msg_obj.get_payload())
+                    
+                    from_header = msg_obj['From'] or 'Unknown'
+                    from_email = from_header.split('<')[-1].rstrip('>') if '<' in from_header else from_header
+                    
+                    full_message = {
+                        'id': message_id,
+                        'subject': msg_obj['Subject'] or 'No subject',
+                        'from': {'emailAddress': {'address': from_email}},
+                        'receivedDateTime': msg_obj['Date'] or '',
+                        'body': {
+                            'contentType': content_type_found,
+                            'content': body_content
+                        }
+                    }
+                    posts = [full_message]
+                
+                # Use message_id as unique identifier for tracking
+                if self.tracker.is_processed(message_id):
                     print(f"         ✓ Already processed")
                     print()
                     continue
@@ -156,9 +243,10 @@ class EmailMonitor:
                 stats['new'] += 1
                 print(f"         🆕 NEW EMAIL - Processing...")
 
-                # Look up real To: email from sender's Sent Items (most reliable)
+                # For individual mailbox, sender of the message is the one who sent it
+                # We need to look up recipients from sender's sent items
                 mime_to_email = None
-                sender_addr = best_post.get('from', {}).get('emailAddress', {}).get('address', '')
+                sender_addr = full_message.get('from', {}).get('emailAddress', {}).get('address', '')
                 if sender_addr and '@volibits.com' in sender_addr.lower():
                     mime_to_email = self._get_to_email_from_sender_inbox(sender_addr, topic)
                     if mime_to_email:
@@ -166,8 +254,8 @@ class EmailMonitor:
                     else:
                         print(f"         ⚠️  No external To: found in sender inbox")
 
-                # Process the email (pass all posts for email lookup)
-                result = self._process_email(best_post, posts, thread_id, topic, dry_run, mime_to_email)
+                # Process the email as a single post (not a thread)
+                result = self._process_email(full_message, posts, message_id, topic, dry_run, mime_to_email)
 
                 if result['success']:
                     stats['processed'] += 1
@@ -179,10 +267,10 @@ class EmailMonitor:
                         print(f"         ✓ Processed (no candidates found)")
                         stats['skipped_no_candidates'] += 1
 
-                    # Mark as processed using thread_id
+                    # Mark as processed using message_id
                     self.tracker.mark_processed(
-                        message_id=thread_id,
-                        thread_id=thread_id,
+                        message_id=message_id,
+                        thread_id=message_id,
                         subject=topic,
                         num_candidates=result['candidates_inserted'],
                         status='success'
@@ -193,8 +281,8 @@ class EmailMonitor:
 
                     # Mark as processed with error
                     self.tracker.mark_processed(
-                        message_id=thread_id,
-                        thread_id=thread_id,
+                        message_id=message_id,
+                        thread_id=message_id,
                         subject=topic,
                         num_candidates=0,
                         status='error',
@@ -497,7 +585,7 @@ class EmailMonitor:
 
         return None
 
-    def run_continuous(self, interval_seconds: int = 300, dry_run: bool = False, today_only: bool = False):
+    def run_continuous(self, interval_seconds: int = 300, dry_run: bool = False, today_only: bool = False, all_emails: bool = False):
         """
         Run monitor continuously
 
@@ -519,7 +607,7 @@ class EmailMonitor:
 
         try:
             while True:
-                self.process_new_emails(max_emails=50, dry_run=dry_run, today_only=today_only)
+                self.process_new_emails(max_emails=50, dry_run=dry_run, today_only=today_only, all_emails=all_emails)
 
                 print(f"⏰ Waiting {interval_seconds} seconds until next check...")
                 print()
@@ -548,6 +636,8 @@ def main():
                        help='Maximum emails to check per run (default: 50)')
     parser.add_argument('--today-only', action='store_true',
                        help='Only process emails from today (current day)')
+    parser.add_argument('--all-emails', action='store_true',
+                       help='Fetch all emails (read and unread), not just unread')
 
     args = parser.parse_args()
 
@@ -555,7 +645,7 @@ def main():
     tenant_id = os.getenv('AZURE_TENANT_ID')
     client_id = os.getenv('AZURE_CLIENT_ID')
     client_secret = os.getenv('AZURE_CLIENT_SECRET')
-    group_id = os.getenv('GROUP_ID')
+    email_user = os.getenv('EMAIL_USER')
 
     db_host = os.getenv('DB_HOST')
     db_port = int(os.getenv('DB_PORT', 5432))
@@ -565,9 +655,9 @@ def main():
     table_name = os.getenv('TABLE_NAME', 'hrvolibit')  # Default to 'hrvolibit' if not set
 
     # Validate credentials
-    if not all([tenant_id, client_id, client_secret, group_id]):
+    if not all([tenant_id, client_id, client_secret, email_user]):
         print("❌ Missing Azure credentials!")
-        print("   Set AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, GROUP_ID")
+        print("   Set AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, EMAIL_USER")
         return 1
 
     if not all([db_host, db_name, db_user, db_password]):
@@ -595,16 +685,16 @@ def main():
         tenant_id=tenant_id,
         client_id=client_id,
         client_secret=client_secret,
-        group_id=group_id,
+        email_user=email_user,
         db_client=db_client,
         table_name=table_name
     )
 
     # Run monitor
     if args.continuous:
-        monitor.run_continuous(interval_seconds=args.interval, dry_run=args.dry_run, today_only=args.today_only)
+        monitor.run_continuous(interval_seconds=args.interval, dry_run=args.dry_run, today_only=args.today_only, all_emails=args.all_emails)
     else:
-        monitor.process_new_emails(max_emails=args.max_emails, dry_run=args.dry_run, today_only=args.today_only)
+        monitor.process_new_emails(max_emails=args.max_emails, dry_run=args.dry_run, today_only=args.today_only, all_emails=args.all_emails)
 
     return 0
 

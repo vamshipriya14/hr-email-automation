@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
-Test parsing ONE email from the group to verify candidate extraction
+Test parsing ONE email from individual mailbox to verify candidate extraction
 Dry run - shows what would be inserted WITHOUT actually inserting
+Filters: ignores FW:, RE:, and Reminder emails
 """
 import os
 import sys
+import argparse
 from pathlib import Path
 import email
 from email import policy
@@ -14,16 +16,41 @@ import re
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
 try:
-    from graph_group_client import GraphGroupClient
     from graph_email_client import GraphEmailClient
     from email_parser import EmailParser
     from database import PostgresClient
 except ImportError:
     sys.path.insert(0, str(Path(__file__).parent.parent))
-    from src.graph_group_client import GraphGroupClient
     from src.graph_email_client import GraphEmailClient
     from src.email_parser import EmailParser
     from src.database import PostgresClient
+
+
+def should_skip_email(subject: str) -> bool:
+    """
+    Check if email should be skipped based on subject patterns
+    
+    Returns:
+        True if email should be skipped, False otherwise
+    """
+    if not subject:
+        return False
+    
+    subject_lower = subject.lower().strip()
+    
+    # Ignore emails with "Reminder" in subject
+    if "reminder" in subject_lower:
+        return True
+    
+    # Ignore all forwarded emails (FW: or Fw:)
+    if subject_lower.startswith("fw:"):
+        return True
+    
+    # Ignore all replied emails (RE: or Re:)
+    if subject_lower.startswith("re:"):
+        return True
+    
+    return False
 
 
 def display_raw_table(body: str):
@@ -92,8 +119,15 @@ def display_raw_table(body: str):
     print("\n" + "=" * 80 + "\n")
 
 def main():
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Test parsing ONE email from mailbox')
+    parser.add_argument('--all-emails', action='store_true',
+                       help='Fetch all emails (read and unread), not just unread')
+    args = parser.parse_args()
+    
     print("=" * 80)
-    print("🧪 TEST PARSING ONE EMAIL FROM GROUP")
+    print("🧪 TEST PARSING ONE EMAIL FROM MAILBOX")
     print("=" * 80)
     print()
 
@@ -101,40 +135,57 @@ def main():
     tenant_id = os.getenv('AZURE_TENANT_ID')
     client_id = os.getenv('AZURE_CLIENT_ID')
     client_secret = os.getenv('AZURE_CLIENT_SECRET')
-    group_id = os.getenv('GROUP_ID')
+    email_user = os.getenv('EMAIL_USER')
 
-    if not all([tenant_id, client_id, client_secret, group_id]):
+    if not all([tenant_id, client_id, client_secret, email_user]):
         print("❌ Missing environment variables!")
         return
 
     # Create Graph client
-    print("📧 Connecting to rec_team@volibits.com group...")
-    client = GraphGroupClient(
+    print(f"📧 Connecting to {email_user} mailbox...")
+    client = GraphEmailClient(
         tenant_id=tenant_id,
         client_id=client_id,
         client_secret=client_secret,
-        group_id=group_id
+        email_user=email_user
     )
 
-    # Get threads (today only)
-    print("📬 Fetching recent threads (today only)...")
-    threads = client.list_threads(max_results=50, today_only=True)
+    # Get messages (unread only or all, based on flag)
+    if args.all_emails:
+        print("📬 Fetching all messages (read and unread)...")
+        all_messages = client.list_all_messages(max_results=50)
+    else:
+        print("📬 Fetching unread messages only...")
+        all_messages = client.list_unread_messages(max_results=50)
 
-    if not threads:
-        print("❌ No threads found!")
+    if not all_messages:
+        if args.all_emails:
+            print("❌ No messages found!")
+        else:
+            print("❌ No unread messages found!")
+            print("   💡 Tip: Use --all-emails flag to fetch all messages (read and unread)")
         return
 
-    print(f"✅ Found {len(threads)} threads")
-    print()
-
-    # Show available threads
-    print("Available emails:")
+    msg_type = "message(s)" if args.all_emails else "unread message(s)"
+    print(f"✅ Found {len(all_messages)} {msg_type}")
+    
+    # Filter out skipped emails
+    threads = [msg for msg in all_messages if not should_skip_email(msg.get('subject', ''))]
+    
+    if not threads:
+        print("❌ No eligible emails found after filtering!")
+        print("   (All emails are either forwarded/replied or contain 'Reminder')")
+        return
+    
+    print(f"📋 Available emails ({len(threads)} after filtering):")
     print("-" * 80)
-    for i, thread in enumerate(threads, 1):
-        topic = thread.get('topic', 'No subject')
-        last_delivered = thread.get('lastDeliveredDateTime', 'Unknown')
-        print(f"{i}. {topic}")
-        print(f"   Delivered: {last_delivered}")
+    for i, msg in enumerate(threads, 1):
+        subject = msg.get('subject', 'No subject')
+        received = msg.get('receivedDateTime', 'Unknown')
+        sender = msg.get('from', {}).get('emailAddress', {}).get('address', 'Unknown')
+        print(f"{i}. {subject}")
+        print(f"   From: {sender}")
+        print(f"   Received: {received}")
     print("-" * 80)
     print()
 
@@ -153,30 +204,92 @@ def main():
         print("❌ Invalid choice!")
         return
 
-    selected_thread = threads[idx]
-    thread_id = selected_thread.get('id')
-    topic = selected_thread.get('topic', 'No subject')
+    selected_message = threads[idx]
+    message_id = selected_message.get('id')
+    topic = selected_message.get('subject', 'No subject')
 
     print()
     print(f"📧 Selected: {topic}")
-    print(f"   Thread ID: {thread_id}")
+    print(f"   Message ID: {message_id}")
     print()
 
-    # Get posts from this thread
+    # Get full message content
     print("📨 Fetching email content...")
     try:
-        posts = client.get_thread_posts(thread_id)
-
-        if not posts:
-            print("❌ No posts in this thread!")
-            return
-
-        print(f"✅ Found {len(posts)} post(s) in thread")
+        # First try the standard API
+        try:
+            full_message = client.get_message_content(message_id)
+            posts = [full_message]
+            print(f"✅ Message retrieved via standard API")
+        except Exception as e:
+            # If standard API fails (e.g., for group conversation messages),
+            # try converting MIME to parsed format
+            print(f"⚠️  Standard API failed ({str(e)[:50]}...), trying MIME format...")
+            mime_content = client.get_message_mime(message_id)
+            
+            # Parse MIME content
+            msg_obj = email.message_from_string(mime_content, policy=policy.default)
+            
+            # Extract text content from multipart messages
+            body_content = ""
+            content_type_found = 'plain'
+            
+            if msg_obj.is_multipart():
+                # Try HTML first (preferred for table extraction), then plain text
+                for part in msg_obj.iter_parts():
+                    if part.get_content_maintype() == 'text':
+                        try:
+                            content_type = part.get_content_type()
+                            part_content = part.get_content()
+                            
+                            if content_type == 'text/html':
+                                body_content = part_content
+                                content_type_found = 'html'
+                                break
+                            elif content_type == 'text/plain' and not body_content:
+                                body_content = part_content
+                                content_type_found = 'plain'
+                        except Exception as e2:
+                            pass
+            else:
+                # Non-multipart message
+                try:
+                    body_content = msg_obj.get_content()
+                    content_type = msg_obj.get_content_type()
+                    if 'html' in content_type:
+                        content_type_found = 'html'
+                except:
+                    try:
+                        payload = msg_obj.get_payload(decode=True)
+                        if isinstance(payload, bytes):
+                            body_content = payload.decode('utf-8', errors='ignore')
+                        else:
+                            body_content = str(payload)
+                    except:
+                        body_content = str(msg_obj.get_payload())
+            
+            # Convert to format similar to message_content response
+            from_header = msg_obj['From'] or 'Unknown'
+            # Parse "Name <email>" format
+            from_email = from_header.split('<')[-1].rstrip('>') if '<' in from_header else from_header
+            
+            full_message = {
+                'id': message_id,
+                'subject': msg_obj['Subject'] or 'No subject',
+                'from': {'emailAddress': {'address': from_email}},
+                'receivedDateTime': msg_obj['Date'] or '',
+                'body': {
+                    'contentType': content_type_found,
+                    'content': body_content
+                }
+            }
+            posts = [full_message]
+            print(f"✅ Message retrieved via MIME")
+        
         print()
 
-        # Try to find a post with candidate data by parsing ALL posts
-        # Some threads have replies/forwards with no data
-        print("🔍 Searching all posts for candidate data...")
+        # Parse the message for candidate data
+        print("🔍 Parsing message for candidate data...")
         print()
 
         best_post = None
@@ -188,25 +301,25 @@ def main():
             body_content = body_info.get('content', '')
             body_type = body_info.get('contentType', 'text')
 
-            # Quick check: does this post have a table?
+            # Quick check: does this message have a table?
             if '<table' not in body_content.lower():
                 continue
 
-            # Try parsing this post
+            # Try parsing this message
             from_info = post.get('from', {})
             sender = from_info.get('emailAddress', {}).get('address', 'Unknown')
 
             # Create temporary email message
-            msg = email.message.EmailMessage()
-            msg['Subject'] = topic
-            msg['From'] = sender
-            msg['To'] = 'rec_team@volibits.com'
-            msg.set_content(body_content, subtype='html' if body_type == 'html' else 'plain')
+            msg_obj = email.message.EmailMessage()
+            msg_obj['Subject'] = topic
+            msg_obj['From'] = sender
+            msg_obj['To'] = email_user
+            msg_obj.set_content(body_content, subtype='html' if body_type == 'html' else 'plain')
 
             # Save to temporary file
             temp_file = Path('/tmp/test_email_temp.eml')
             with open(temp_file, 'wb') as f:
-                f.write(msg.as_bytes())
+                f.write(msg_obj.as_bytes())
 
             # Parse (pass thread posts for participant email matching)
             try:
@@ -309,7 +422,7 @@ def main():
         msg = email.message.EmailMessage()
         msg['Subject'] = topic
         msg['From'] = sender
-        msg['To'] = 'rec_team@volibits.com'
+        msg['To'] = email_user
         msg.set_content(body_content, subtype='html' if body_type == 'html' else 'plain')
 
         # Save to temporary file for parser

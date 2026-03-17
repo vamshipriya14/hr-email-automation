@@ -11,6 +11,7 @@ import email
 from email import policy
 from typing import List, Dict, Any, Optional
 import logging
+from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +103,36 @@ class GraphEmailClient:
             logger.error(f"Failed to list messages: {e}")
             raise
 
+    def list_all_messages(self, folder: str = 'inbox', max_results: int = 50) -> List[Dict[str, Any]]:
+        """
+        List all messages from mailbox (read and unread)
+
+        Args:
+            folder: Folder name (default: 'inbox')
+            max_results: Maximum number of messages to return
+
+        Returns:
+            List of message metadata dictionaries
+        """
+        url = f"{self.graph_api_endpoint}/users/{self.email_user}/mailFolders/{folder}/messages"
+
+        params = {
+            '$top': max_results,
+            '$orderby': 'receivedDateTime desc',
+            '$select': 'id,subject,from,receivedDateTime,hasAttachments,internetMessageId'
+        }
+
+        try:
+            response = requests.get(url, headers=self.get_headers(), params=params, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+            messages = data.get('value', [])
+            logger.info(f"Found {len(messages)} messages (read and unread)")
+            return messages
+        except Exception as e:
+            logger.error(f"Failed to list messages: {e}")
+            raise
+
     def get_message_content(self, message_id: str) -> Dict[str, Any]:
         """
         Get full message content including body and attachments
@@ -112,7 +143,9 @@ class GraphEmailClient:
         Returns:
             Dictionary with message details
         """
-        url = f"{self.graph_api_endpoint}/users/{self.email_user}/messages/{message_id}"
+        # URL-encode the message ID to handle special characters
+        encoded_message_id = quote(message_id, safe='')
+        url = f"{self.graph_api_endpoint}/users/{self.email_user}/messages/{encoded_message_id}"
 
         params = {
             '$select': 'id,subject,from,to,receivedDateTime,body,hasAttachments,internetMessageId'
@@ -123,7 +156,7 @@ class GraphEmailClient:
             response.raise_for_status()
             return response.json()
         except Exception as e:
-            logger.error(f"Failed to get message content: {e}")
+            # Don't log full error - it will be handled by MIME fallback
             raise
 
     def get_message_mime(self, message_id: str) -> str:
@@ -136,7 +169,9 @@ class GraphEmailClient:
         Returns:
             MIME format email string
         """
-        url = f"{self.graph_api_endpoint}/users/{self.email_user}/messages/{message_id}/$value"
+        # URL-encode the message ID to handle special characters
+        encoded_message_id = quote(message_id, safe='')
+        url = f"{self.graph_api_endpoint}/users/{self.email_user}/messages/{encoded_message_id}/$value"
 
         try:
             response = requests.get(url, headers=self.get_headers(), timeout=30)
@@ -156,7 +191,9 @@ class GraphEmailClient:
         Returns:
             List of attachment metadata
         """
-        url = f"{self.graph_api_endpoint}/users/{self.email_user}/messages/{message_id}/attachments"
+        # URL-encode the message ID to handle special characters
+        encoded_message_id = quote(message_id, safe='')
+        url = f"{self.graph_api_endpoint}/users/{self.email_user}/messages/{encoded_message_id}/attachments"
 
         try:
             response = requests.get(url, headers=self.get_headers(), timeout=30)
@@ -177,7 +214,9 @@ class GraphEmailClient:
         Returns:
             True if successful
         """
-        url = f"{self.graph_api_endpoint}/users/{self.email_user}/messages/{message_id}"
+        # URL-encode the message ID to handle special characters
+        encoded_message_id = quote(message_id, safe='')
+        url = f"{self.graph_api_endpoint}/users/{self.email_user}/messages/{encoded_message_id}"
 
         data = {
             'isRead': True
